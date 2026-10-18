@@ -59,6 +59,7 @@ static bool _passThruMode = false;
 typedef const char*(CDECL* PFN_wine_get_version)(void);
 typedef void (*PFN_InitializeASI)(void);
 typedef bool (*PFN_PatchResult)(void);
+typedef const char* (*PFN_XeFGModelName)(void);
 
 static inline void* ManualGetProcAddress(HMODULE hModule, const char* functionName)
 {
@@ -249,9 +250,13 @@ void LoadAsiPlugins()
 
                 auto init = (PFN_InitializeASI) KernelBaseProxy::GetProcAddress_()(hMod, "InitializeASI");
                 auto patchResult = (PFN_PatchResult) KernelBaseProxy::GetProcAddress_()(hMod, "PatchResult");
+                auto xefgModelName = (PFN_XeFGModelName) KernelBaseProxy::GetProcAddress_()(hMod, "XeFGModelName");
 
                 if (init != nullptr)
                     init();
+
+                if (xefgModelName != nullptr)
+                    State::Instance().asiXeFGModelName = xefgModelName;
 
                 if (patchResult != nullptr)
                 {
@@ -311,8 +316,14 @@ void LoadAsiPlugins()
                                     auto patchResult =
                                         (PFN_PatchResult) KernelBaseProxy::GetProcAddress_()(hMod, "PatchResult");
 
+                                    auto xefgModelName =
+                                        (PFN_XeFGModelName) KernelBaseProxy::GetProcAddress_()(hMod, "XeFGModelName");
+
                                     if (init != nullptr)
                                         init();
+
+                                    if (xefgModelName != nullptr)
+                                        State::Instance().asiXeFGModelName = xefgModelName;
 
                                     if (patchResult != nullptr)
                                     {

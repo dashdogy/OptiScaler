@@ -627,6 +627,11 @@ class Config
     // XeFG
     CustomOptional<bool> FGXeFGIgnoreInitChecks { false };
     CustomOptional<int> FGXeFGInterpolationCount { 1 };
+    CustomOptional<bool> FGXeFGDynamicMFG { false };           // Interpolation count picked up to FGXeFGInterpolationCount
+    CustomOptional<float> FGXeFGFramerateTargetDMFG { 0.0f }; // 0.0 means the FPS limit, else just under the refresh rate
+    CustomOptional<int> FGXeFGRoundingDMFG { 1 };             // As NVIDIA's Dynamic MFG: 0 down, 1 nearest, 2 up
+    CustomOptional<bool> FGXeFGDynamicAllow1X { true };       // Dynamic MFG may turn frame generation off (1X)
+    CustomOptional<bool> FGXeFGTargetAsCapDMFG { false };     // Dynamic MFG's target is also the FPS limit while it runs
     CustomOptional<int, NoDefault> FGXeFGOverrideInterpolationCount; // Game's own XeFG (XeFG input), 0 = off
     CustomOptional<bool> FGXeFGUIComposition { false };
     CustomOptional<bool> FGXeFGDepthInverted { true };

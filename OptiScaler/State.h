@@ -182,6 +182,9 @@ class State
     flag_set<GameQuirk> gameQuirks;
     bool isOptiPatcherSucceed = false;
 
+    // Optional ASI plugin export: the model XeFG runs on, shown in the XeFG card
+    const char* (*asiXeFGModelName)() = nullptr;
+
     // Reseting on creation of new feature
     std::optional<bool> autoExposure;
 
@@ -284,6 +287,9 @@ class State
 
     bool WAR_xefgRequestFGToggle = false;
 
+    // XeFG Dynamic MFG with "Use target as cap": its target while it runs (0 = no cap), the FPS limit when lower
+    float xefgDynamicCapFps = 0.0f;
+
     bool dlssgGameDMFGSupported = false;
     sl::DLSSGMode dlssgLastSetMode = sl::DLSSGMode::eOff;
     int dlssgDetectedInterpolationCount = 0;
@@ -356,6 +362,8 @@ class State
     std::vector<DetailedGpuTime> detailedGpuTimes;
     double lastFGFrameTime = 0.0;
     double presentFrameTime = 0.0;
+    // Time the game's last present to the FG swapchain took, with the FPS limiter's sleep (V-Sync, a full queue)
+    double lastFGPresentMs = 0.0;
     std::mutex frameTimeMutex;
 
     // Opti checking if everything is setup correctly on game launch
@@ -424,6 +432,20 @@ class State
             return currentFG;
 
         return currentVkFG;
+    }
+
+    // The generated frames per real frame the active frame generation presents now, 0 when it's off. The game's
+    // DLSSG, also through an NVNGX replacement, reports its count with each evaluate, OptiScaler's other outputs
+    // their live count (XeFG's Dynamic MFG included)
+    int FGInterpolationCount() const
+    {
+        if (activeFgNvngx != FGNvngxReplacement::None || activeFgOutput == FGOutput::DLSSG)
+            return dlssgDetectedInterpolationCount;
+
+        if (auto fg = CurrentFG(); fg != nullptr && fg->IsActive() && !fg->IsPaused())
+            return (int) fg->GetInterpolatedFrameCount();
+
+        return 0;
     }
 
     bool FGSwapchainExists() const

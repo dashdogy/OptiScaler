@@ -1366,6 +1366,18 @@ static ImVec4 toneMapColor(const ImVec4& color)
     }
 }
 
+// "Current <name> state: ON 4x" from the active frame generation's current ratio, or OFF
+static void RenderFGState(const char* name)
+{
+    ImGui::Text("Current %s state:", name);
+    ImGui::SameLine();
+
+    if (auto count = State::Instance().FGInterpolationCount(); count > 0)
+        ImGui::TextColored(toneMapColor(ImVec4(0.f, 1.f, 0.25f, 1.f)), std::format("ON {}x", count + 1).c_str());
+    else
+        ImGui::TextColored(toneMapColor(ImVec4(1.f, 0.f, 0.f, 1.f)), "OFF");
+}
+
 static void MenuHdrCheck(ImGuiIO io)
 {
     if (!_hdrTonemapApplied)
@@ -4409,10 +4421,111 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
                         "It might cause crashes and bad IQ!");
         }
 
+        RenderFGState("XeFG");
+
         ImGui::BeginDisabled(!correctMVs || cantActivate);
 
         RenderFGModeSlider(ctx, "Frame Gen##xefg", fgOutput->GetMaxInterpolationCount(),
                            &config->FGXeFGInterpolationCount);
+
+        // Dynamic MFG: the Frame Gen setting is the most, the multiplier follows the game's frame rate
+        if (fgOutput->GetMaxInterpolationCount() > 1)
+        {
+            ImGui::SameLine(0.0f, 16.0f);
+
+            if (bool dynamicMFG = config->FGXeFGDynamicMFG.value_or_default();
+                ImGui::Checkbox("Dynamic MFG##xefg", &dynamicMFG))
+            {
+                config->FGXeFGDynamicMFG = dynamicMFG;
+            }
+
+            ShowTooltip("Picks the multiplier every frame, up to the Frame Gen setting, so the\n"
+                        "presented frame rate follows the target (see DMFG Rounding).\n"
+                        "Only the FPS limit, V-Sync or Use target as cap caps the presented\n"
+                        "frame rate; without one it can land above the target.\n"
+                        "A higher multiplier is used only if it raises the frame rate\n"
+                        "enough: each generated frame costs GPU time.");
+
+            ImGui::BeginDisabled(!config->FGXeFGDynamicMFG.value_or_default());
+            static float xefgFpsTarget = config->FGXeFGFramerateTargetDMFG.value_or_default();
+            const float fpsSliderMax = (float) std::max(200, refreshRate);
+            ImGui::SliderFloat("DMFG FPS Target##xefg", &xefgFpsTarget, 0, fpsSliderMax, "%.0f");
+
+            ShowTooltip("0 means OptiScaler's FPS limit, or without one just under the display\n"
+                        "refresh rate (116 at 120 Hz). A target above the FPS limit uses the limit.");
+
+            if (ImGui::Button("Apply Target##xefg"))
+                config->FGXeFGFramerateTargetDMFG = xefgFpsTarget;
+
+            ImGui::SameLine(0.0f, 16.0f);
+
+            if (ImGui::Button("Reset Target##xefg"))
+            {
+                xefgFpsTarget = 0.0f;
+                config->FGXeFGFramerateTargetDMFG.reset();
+            }
+
+            ImGui::SameLine(0.0f, 16.0f);
+
+            if (bool targetAsCap = config->FGXeFGTargetAsCapDMFG.value_or_default();
+                ImGui::Checkbox("Use target as cap##xefg", &targetAsCap))
+            {
+                config->FGXeFGTargetAsCapDMFG = targetAsCap;
+            }
+
+            ShowTooltip("While Dynamic MFG runs, the target is also the FPS limit:\n"
+                        "the presented frame rate doesn't go above it, and the multiplier\n"
+                        "steps up whenever the frame rate falls under it (no Rounding, no 1X).\n"
+                        "A lower FPS limit stays in place.");
+
+            // The cap holds the target with its own count logic
+            ImGui::BeginDisabled(config->FGXeFGTargetAsCapDMFG.value_or_default());
+
+            const char* roundings[] = { "Down", "Nearest", "Up" };
+            int rounding = std::clamp(config->FGXeFGRoundingDMFG.value_or_default(), 0, 2);
+
+            ImGui::SetNextItemWidth(150.0f * menuResScale);
+            if (ImGui::Combo("DMFG Rounding##xefg", &rounding, roundings, IM_ARRAYSIZE(roundings)))
+                config->FGXeFGRoundingDMFG = rounding;
+
+            ShowTooltip("Which multiplier the target asks for.\n"
+                        "Nearest: the presented frame rate nearest the target.\n"
+                        "Up: the lowest multiplier at or above the target.\n"
+                        "Down: the highest multiplier at or below the target.\n"
+                        "2X and 3X are a whole real frame apart, so the nearest can still\n"
+                        "be about 20% off the target there.\n"
+                        "Under the FPS limit or V-Sync it changes only when clearly off\n"
+                        "(Nearest: 2X from 71% of the target, 6X from 88%).");
+
+            ImGui::SameLine(0.0f, 16.0f);
+
+            if (bool allow1X = config->FGXeFGDynamicAllow1X.value_or_default();
+                ImGui::Checkbox("Allow 1X##xefg", &allow1X))
+            {
+                config->FGXeFGDynamicAllow1X = allow1X;
+            }
+
+            ShowTooltip("Lets Dynamic MFG turn frame generation off (1X) when the game alone\n"
+                        "is close enough to the target (Nearest: nearer than 2X; under the\n"
+                        "FPS limit or V-Sync from 56% of it).\n"
+                        "Turning it back on shows one real frame without generated frames.");
+
+            ImGui::EndDisabled();
+            ImGui::EndDisabled();
+        }
+
+        // XeFG runs its 2X model for one generated frame and swaps to its MFG model for more.
+        // An ASI plugin that runs XeFG on another model reports it instead (optional XeFGModelName export)
+        {
+            const char* model = fgOutput->GetInterpolatedFrameCount() > 1 ? "MFG" : "2X";
+            const char* pluginModel = state.asiXeFGModelName != nullptr ? state.asiXeFGModelName() : nullptr;
+            const bool fromPlugin = pluginModel != nullptr && pluginModel[0] != '\0';
+
+            ImGui::Text("XeFG Model: %s", fromPlugin ? pluginModel : model);
+            ShowTooltip(fromPlugin ? "Reported by an ASI plugin that changes XeFG's model"
+                                   : "2X: XeFG's frame generation model (1 generated frame)\n"
+                                     "MFG: XeFG's multi-frame generation model (more than 1)");
+        }
 
         bool fgDV = config->FGXeFGDebugView.value_or_default();
         if (ImGui::Checkbox("Debug View##2", &fgDV))
@@ -4522,16 +4635,7 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
             }
         }
 
-        ImGui::Text("Current DLSSG state:");
-        ImGui::SameLine();
-        if (auto count = state.dlssgDetectedInterpolationCount; count > 0)
-        {
-            ImGui::TextColored(toneMapColor(ImVec4(0.f, 1.f, 0.25f, 1.f)), std::format("ON {}x", count + 1).c_str());
-        }
-        else
-        {
-            ImGui::TextColored(toneMapColor(ImVec4(1.f, 0.f, 0.f, 1.f)), "OFF");
-        }
+        RenderFGState("DLSSG");
 
         RenderFGModeSlider(ctx, "Frame Gen##dlssg", fgOutput->GetMaxInterpolationCount(),
                            &config->FGDLSSGInterpolationCount);
@@ -5046,17 +5150,7 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
 
             if (state.swapchainApi == DX12)
             {
-                ImGui::Text("Current DLSSG state:");
-                ImGui::SameLine();
-                if (auto count = state.dlssgDetectedInterpolationCount; count > 0)
-                {
-                    ImGui::TextColored(toneMapColor(ImVec4(0.f, 1.f, 0.25f, 1.f)),
-                                       std::format("ON {}x", count + 1).c_str());
-                }
-                else
-                {
-                    ImGui::TextColored(toneMapColor(ImVec4(1.f, 0.f, 0.f, 1.f)), "OFF");
-                }
+                RenderFGState("DLSSG");
 
                 // Issue mostly shows up on AMD on Windows on pre-RDNA3 in some non-UE games
                 // Hide to reduce confusion, config is still read
