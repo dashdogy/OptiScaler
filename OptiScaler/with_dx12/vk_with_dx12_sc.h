@@ -59,6 +59,9 @@ class VkwDx12SC
     // The devices the FG inputs are shared between, false without an FG swapchain
     static bool InteropDevices(VkDevice& device, VkPhysicalDevice& physicalDevice, ID3D12Device*& dx12Device);
 
+    // Formats the FG inputs can be shared in
+    static bool CanShare(VkFormat format);
+
     static bool CreateSharedImage(VkDevice device, VkPhysicalDevice physicalDevice, ID3D12Device* dx12Device,
                                   VkwDx12Image& image, VkFormat format, uint32_t width, uint32_t height,
                                   VkImageUsageFlags usage);

@@ -1028,6 +1028,9 @@
     <ClInclude Include="inputs\FG\Upscaler_Inputs_VkwDx12.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="inputs\FG\VkwDx12_Inputs.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="framegen\nvngx\Nvngx_FFX.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -1770,6 +1773,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="inputs\FG\Upscaler_Inputs_VkwDx12.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="inputs\FG\VkwDx12_Inputs.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="low_latency\input\input_uell.cpp">

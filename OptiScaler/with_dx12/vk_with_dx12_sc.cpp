@@ -2,6 +2,7 @@
 #include "vk_with_dx12_sc.h"
 
 #include <with_dx12/with_dx12.h>
+#include <inputs/FG/VkwDx12_Inputs.h>
 
 #include <hooks/FG_Hooks.h>
 #include <hooks/DxgiFactory_Hooks.h>
@@ -273,8 +274,13 @@ struct PresentChain
 bool VkwDx12SC::Wanted()
 {
     auto& state = State::Instance();
-    return state.activeFgOutput == FGOutput::XeFG && state.activeFgInput == FGInput::Upscaler && !state.vulkanSkipHooks;
+
+    // Every FG input, the Nvngx one has no FG output
+    return state.activeFgOutput == FGOutput::XeFG && state.activeFgInput != FGInput::NoFG &&
+           state.activeFgInput != FGInput::NvngxFG && !state.vulkanSkipHooks;
 }
+
+bool VkwDx12SC::CanShare(VkFormat format) { return SharedDxgiFormat(format) != DXGI_FORMAT_UNKNOWN; }
 
 void VkwDx12SC::DeviceCreated(VkDevice device, const VkDeviceCreateInfo* pCreateInfo)
 {
@@ -1317,6 +1323,9 @@ bool VkwDx12SC::RecordCopy(PresentImage& presentImage, VkImage swapchainImage)
 
     if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS)
         return false;
+
+    // FG inputs valid until present, before _vkDone lets D3D12 read them
+    VkwDx12Inputs::RecordPresentCopies(commandBuffer, _commandPoolFamily);
 
     VkImageMemoryBarrier barriers[2] {};
 
