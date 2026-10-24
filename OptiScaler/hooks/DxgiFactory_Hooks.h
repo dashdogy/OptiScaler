@@ -7,6 +7,9 @@
 
 class DxgiFactoryHooks
 {
+    // Creates the DX12 FG swapchain of Vulkan games
+    friend class VkwDx12SC;
+
   public:
     // fromSpecialK: created through Special K's hooks, waits for them to be installed first
     static void HookToFactory(IDXGIFactory* pFactory, bool fromSpecialK = false);
