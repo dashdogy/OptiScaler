@@ -29,8 +29,10 @@ cbuffer Params : register(b0)
 #endif
 Texture2D<float4> Source : register(t0);
 
+// The copies write many formats, the store converts to the view's format (shaderStorageImageWriteWithoutFormat)
 #ifdef VK_MODE
 [[vk::binding(1, 0)]]
+[[vk::image_format("unknown")]]
 #endif
 RWTexture2D<float4> Dest : register(u0);
 

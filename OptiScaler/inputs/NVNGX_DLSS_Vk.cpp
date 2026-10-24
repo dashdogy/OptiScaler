@@ -7,6 +7,7 @@
 #include <framegen/nvngx/Nvngx_FG.h>
 #include <upscalers/nvngx/Nvngx_RR.h>
 #include <inputs/FG/Upscaler_Inputs_Vk.h>
+#include <inputs/FG/Upscaler_Inputs_VkwDx12.h>
 #include "NVNGX_Parameter.h"
 #include "proxies/Nvngx_Proxy.h"
 
@@ -1039,6 +1040,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_VULKAN_EvaluateFeature(VkCommandBuffer 
     state.currentFeature = deviceContext;
 
     UpscalerInputsVk::UpscaleStart(InCmdList, InParameters, deviceContext);
+    UpscalerInputsVkwDx12::UpscaleStart(InCmdList, InParameters, deviceContext);
 
     NVSDK_NGX_Resource_VK* output = nullptr;
     InParameters->Get(NVSDK_NGX_Parameter_Output, (void**) &output);
