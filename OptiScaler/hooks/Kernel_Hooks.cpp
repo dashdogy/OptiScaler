@@ -5,17 +5,15 @@
 #include "Streamline_Hooks.h"
 #include "LibraryLoad_Hooks.h"
 
-#include <fsr4/FSR4ModelSelection.h>
-
 #include <Util.h>
 #include <State.h>
 #include <Config.h>
 
 #include <cwctype>
 #include <misc/IdentifyGpu.h>
+#include <fsr4/FSR4DriverProvider.h>
 
 #include "Hook_Utils.h"
-#include <proxies/XeLL_Proxy.h>
 
 #include "Amdxc64_Hooks.h"
 #pragma intrinsic(_ReturnAddress)
@@ -185,6 +183,16 @@ HMODULE WINAPI KernelHooks::hk_K32_GetModuleHandleW(LPCWSTR lpModuleName)
 
             return original;
         }
+
+        // The driver dlls only hand out their providers when they see signed FFX SDK dlls loaded,
+        // when Opti uses its own FFX dlls the driver dll stands in for them
+        if (_wcsnicmp(lpModuleName, L"amd_fidelityfx_", 15) == 0)
+        {
+            if (auto original = o_K32_GetModuleHandleW(lpModuleName); original != nullptr)
+                return original;
+
+            return FSR4DriverDll::SdkModuleStandIn(lpModuleName, Util::GetCallerModule(_ReturnAddress()));
+        }
     }
 
     return o_K32_GetModuleHandleW(lpModuleName);
@@ -195,16 +203,8 @@ BOOL WINAPI KernelHooks::hk_K32_GetModuleHandleExA(DWORD dwFlags, LPCSTR lpModul
 {
     if (lpModuleName && dwFlags == 0 && strcmp("libxell.dll", lpModuleName) == 0 && phModule)
     {
-#ifdef LOW_LATENCY_INPUTS
         *phModule = dllModule;
         return true;
-#else
-        if (const auto module = XeLLProxy::Module())
-        {
-            return o_K32_GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, reinterpret_cast<LPCSTR>(module),
-                                            phModule);
-        }
-#endif
     }
 
     return o_K32_GetModuleHandleExA(dwFlags, lpModuleName, phModule);

@@ -26,7 +26,7 @@ class ScopedID
 
 struct ImGuiWindow;
 
-// Draws a rectangle around everything drawn while it is alive. Nothing is drawn when it stays empty
+// Draws a group box around everything drawn while it is alive. Nothing is drawn when it stays empty
 class ScopedCard
 {
   public:
@@ -44,6 +44,8 @@ class ScopedCard
     static void SetFilter(const char* id);
 
   private:
+    void DrawTitle(const char* label);
+
     inline static ScopedCard* _current = nullptr;
     inline static const char* _filter = nullptr;
 
@@ -56,6 +58,8 @@ class ScopedCard
     float _oldWorkRectMaxX = 0.0f;
     float _oldContentRectMaxX = 0.0f;
     bool _active = false;
+    ImVec2 _titleMin {};
+    ImVec2 _titleMax {};
     bool _hasTitle = false;
 };
 
@@ -228,12 +232,11 @@ class MenuCommon
     static void RenderActiveUpscalerSettings(RenderMenuContext& ctx);
     static void RenderFrameGenerationSelection(RenderMenuContext& ctx);
     static void RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx);
-    static void RenderFGModeCombo(RenderMenuContext& ctx, const char* label, int maxInterpolationCount,
-                                  CustomOptional<int>* countConfig);
+    static void RenderFGModeSlider(RenderMenuContext& ctx, const char* label, int maxInterpolationCount,
+                                   CustomOptional<int>* countConfig, const char* tooltip = nullptr);
     static void RenderFsrCommonSettings(RenderMenuContext& ctx);
     static void RenderFramerateSettings(RenderMenuContext& ctx);
     static void RenderVsyncSettings(RenderMenuContext& ctx);
-    static void RenderFakenvapiSettings(RenderMenuContext& ctx);
     static void RenderLowLatencySettings(RenderMenuContext& ctx);
     static void RenderActiveImageSettings(RenderMenuContext& ctx);
     static void RenderUpscaleRatioSettings(RenderMenuContext& ctx);
@@ -283,4 +286,12 @@ class MenuCommon
     static void HideMenu();
     static void Present();
     static void ApplyThemeStyle();
+
+    // Vulkan FG outputs present the generated frames on their own, the game's presents only show the real ones.
+    // FGOutputPresent is called for each frame they present, FGOutputPresents says if the game's frames go through
+    // them.
+    static void FGOutputPresent();
+    static void FGOutputPresents(bool presents);
+    // For outputs presenting out of OptiScaler's sight: the frames a rendered frame became, over its interval
+    static void FGOutputFramesPresented(uint32_t frames);
 };

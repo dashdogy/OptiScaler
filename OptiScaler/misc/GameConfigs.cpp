@@ -94,6 +94,7 @@ GAME_SETTING(UseNtdllHooks);
 GAME_SETTING(VulkanExtensionSpoofing);
 GAME_SETTING(VulkanSpoofing);
 GAME_SETTING(ReprojectionDepthCutoff);
+GAME_SETTING(SimulateWaitableObject);
 
 #undef GAME_SETTING
 
@@ -134,6 +135,13 @@ ConfigDefault WithXeFG(ConfigDefault setting)
 using enum GameQuirk;
 
 const std::vector<GameConfig> gameConfigs = {
+
+    // BeamNG
+    // Spoofing not required for DLSS inputs for both Dx12 and Vk
+    {
+        .exes = { "beamng.drive.x64.exe" },
+        .defaults = { DxgiSpoofing = false },
+    },
 
     // Red Dead Redemption 2
     // Spoofing causes FSR2 inputs crash, DLSS inputs need OptiPatcher to avoid artifacts/crashes anyway
@@ -204,7 +212,7 @@ const std::vector<GameConfig> gameConfigs = {
         .exes = { "endfield.exe" },
         .defaults = { UseFakenvapi = false, OnNonNvidia(VulkanSpoofing = true),
                       OnNonNvidia(VulkanExtensionSpoofing = true) },
-        .quirks = { ForceCreateD3D12Device, VulkanDLSSBarrierFixup },
+        .quirks = { ForceCreateD3D12Device, VulkanDLSSBarrierFixup, IgnoreTagsWithoutHudlessForFG },
     },
 
     // Neverness to Everness
@@ -505,12 +513,25 @@ const std::vector<GameConfig> gameConfigs = {
     },
 
     // Metro Exodus Enhanced Edition
-    // ForceBorderless required to avoid black screen with XeFG, Manual Input polling for fixing invisible Opti Overlay,
+    // ForceBorderless required to avoid black screen with XeFG
     // Hudfix incompatible
     {
         .exes = { "metroexodus.exe" },
         .defaults = { DxgiSpoofing = false, WithXeFG(FGXeFGForceBorderless = true), AutoExposure = true,
                       WithUpscalerFGInput(FGDisableHUDFix = true) },
+    },
+
+    // METRO 2033 Redux, METRO Last Light Redux
+    {
+        .exes = { "metro.exe" },
+        .defaults = { DxgiSpoofing = false },
+    },
+
+    // Kingdom Come: Deliverance II
+    // Streamline stalls its flip queue when it also waits on the game's frame latency waitable
+    {
+        .exes = { "kingdomcome.exe" },
+        .quirks = { DLSSGFrameLatencyWaitable },
     },
 
     // Star Wars: Outlaws
@@ -551,14 +572,14 @@ const std::vector<GameConfig> gameConfigs = {
     },
 
     // S.T.A.L.K.E.R.: Legends of the Zone Trilogy - Enhanced Editions
-    // Manual input polling for fixing invisible Opti Overlay, no spoof needed for DLSS inputs
+    // No spoof needed for DLSS inputs
     {
         .exes = { "xrengine.exe" },
         .defaults = { DxgiSpoofing = false },
     },
 
     // Dying Light 2: Reloaded Edition
-    // SL spoof enough to unlock everything DLSS, manual input polling for fixing unclickable Opti Overlay,
+    // SL spoof enough to unlock everything DLSS
     // Hudfix incompatible
     {
         .exes = { "dyinglightgame_x64_rwdi.exe" },
@@ -566,7 +587,7 @@ const std::vector<GameConfig> gameConfigs = {
     },
 
     // Dying Light: The Beast
-    // SL spoof enough to unlock everything DLSS, manual input polling for fixing unclickable Opti Overlay
+    // SL spoof enough to unlock everything DLSS
     {
         .exes = { "dyinglightgame_thebeast_x64_rwdi.exe" },
         .defaults = { DxgiSpoofing = false },
@@ -589,11 +610,12 @@ const std::vector<GameConfig> gameConfigs = {
     // The Witcher 3
     // SL spoof enough to unlock everything DLSS/No spoof needed for DLSS inputs,
     // WAR for our SL having to init on the real device that the game will actually be using
-    // early in boot it creates a device that it later *needs* to properly destroy
+    // early in boot it creates a device that it later *needs* to properly destroy,
+    // MVs with XeFG inputs don't include camera motion
     {
         .exes = { "witcher3.exe" },
         .defaults = { DxgiSpoofing = false },
-        .quirks = { CreateSLOnThe2ndDevice },
+        .quirks = { CreateSLOnThe2ndDevice, XeFGCameraMotionFill },
     },
 
     // No UE barriers to fix crash on upscaler init
@@ -642,10 +664,10 @@ const std::vector<GameConfig> gameConfigs = {
     },
 
     // CONTROL Resonant
-    // SL spoof enough to unlock everything DLSS, Preserve FG Swapchain just crashes the DLSSG inputs
+    // SL spoof enough to unlock everything DLSS, SimulateWaitableObject required to avoid freeze with DLSSG inputs
     {
         .exes = { "controlresonant.exe" },
-        .defaults = { DxgiSpoofing = false, FGPreserveSwapChain = false },
+        .defaults = { DxgiSpoofing = false, FGPreserveSwapChain = false, SimulateWaitableObject = true },
     },
 
     // SL spoof enough to unlock everything DLSS/No spoof needed for DLSS inputs

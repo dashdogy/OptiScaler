@@ -7,8 +7,6 @@
 #include <menu/menu_overlay_dx.h>
 #include <resource_tracking/ResTrack_dx12.h>
 
-#include <nvapi/fakenvapi.h>
-
 #include <magic_enum.hpp>
 
 #include <DirectXMath.h>
@@ -107,24 +105,11 @@ bool XeFG_Dx12::CreateSwapchainContext(ID3D12Device* device)
             LOG_ERROR("SetLoggingCallback error: {} ({})", magic_enum::enum_name(result), (UINT) result);
         }
 
-#ifndef LOW_LATENCY_INPUTS
-        // Force fakenvapi to create XeLL for us
-        if (fakenvapi::forceMode(device, LowLatencyMode::XeLL))
+        // XeFG reads the frames of the XeLL context it gets: the XeLL output's, or its own next to a Reflex or
+        // AntiLag 2 output. Either stays valid until this context is destroyed.
+        if (auto xellContext = InputCommon::acquire_xefg_xell(device); xellContext != nullptr)
         {
-            xell_sleep_params_t sleepParams = {};
-            sleepParams.bLowLatencyMode = true;
-            sleepParams.bLowLatencyBoost = false;
-            sleepParams.minimumIntervalUs = 0;
-
-            auto xellResult =
-                XeLLProxy::SetSleepMode()((xell_context_handle_t) fakenvapi::getCurrentContext(), &sleepParams);
-            if (xellResult != XELL_RESULT_SUCCESS)
-            {
-                LOG_ERROR("SetSleepMode error: {} ({})", magic_enum::enum_name(xellResult), (UINT) xellResult);
-                return false;
-            }
-
-            result = XeFGProxy::SetLatencyReduction()(_swapChainContext, fakenvapi::getCurrentContext());
+            result = XeFGProxy::SetLatencyReduction()(_swapChainContext, xellContext);
 
             if (result != XEFG_SWAPCHAIN_RESULT_SUCCESS)
             {
@@ -132,33 +117,6 @@ bool XeFG_Dx12::CreateSwapchainContext(ID3D12Device* device)
                 return false;
             }
         }
-#else
-        InputXeLL::xell_input_handle_t localXellContext;
-        if (InputXeLL::D3D12CreateContext(device, &localXellContext) == XELL_RESULT_SUCCESS)
-        {
-            localXellContext->inputContext.localContext = true; // We created this context
-
-            xell_sleep_params_t sleepParams = {};
-            sleepParams.bLowLatencyMode = true;
-            sleepParams.bLowLatencyBoost = false;
-            sleepParams.minimumIntervalUs = 0;
-
-            auto xellResult = InputXeLL::SetSleepMode(localXellContext, &sleepParams);
-            if (xellResult != XELL_RESULT_SUCCESS)
-            {
-                LOG_ERROR("SetSleepMode error: {} ({})", magic_enum::enum_name(xellResult), (UINT) xellResult);
-                return false;
-            }
-
-            result = XeFGProxy::SetLatencyReduction()(_swapChainContext, (xell_context_handle_t) localXellContext);
-
-            if (result != XEFG_SWAPCHAIN_RESULT_SUCCESS)
-            {
-                LOG_ERROR("SetLatencyReduction error: {} ({})", magic_enum::enum_name(result), (UINT) result);
-                return false;
-            }
-        }
-#endif
         else
         {
             LOG_ERROR("Couldn't create XeLL");
@@ -223,6 +181,9 @@ bool XeFG_Dx12::DestroySwapchainContext()
         else
         {
             State::Instance().currentFGSwapchain = nullptr;
+
+            // Its XeLL context isn't read anymore
+            InputCommon::release_xefg_xell();
         }
     }
 
@@ -623,6 +584,10 @@ void XeFG_Dx12::Activate()
         {
             _isActive = true;
             _lastDispatchedFrame = 0;
+            _generationOff = false;
+
+            // FG back on: Dynamic MFG starts its averages over but keeps what it learned
+            _dynamic.Restart();
         }
 
         LOG_INFO("SetEnabled: true, result: {} ({})", magic_enum::enum_name(result), (UINT) result);
@@ -663,6 +628,9 @@ void XeFG_Dx12::Deactivate()
         {
             _isActive = false;
         }
+
+        // Activate switches frame generation back on
+        _generationOff = false;
 
         //_lastDispatchedFrame = 0;
         _waitingNewFrameData = false;
@@ -752,15 +720,30 @@ bool XeFG_Dx12::Dispatch()
                      _maxInterpolationCount);
         }
 
-        const int targetCount = std::clamp(
+        int targetCount = std::clamp(
             Config::Instance()->FGInterpolationCount(Config::Instance()->FGXeFGInterpolationCount.value_or_default()),
             1, std::max(_maxInterpolationCount, 1));
+
+        // Dynamic MFG, the game's wait in the present path is its last present
+        const HWND window = _hwnd != nullptr ? _hwnd : state.currentSwapchainDesc.OutputWindow;
+        const auto dynamic =
+            _dynamic.Update(targetCount, _framesToInterpolate, _generationOff, state.lastFGPresentMs, window);
+        const bool dynamicChange = dynamic.ownChange;
+
+        // 1X: frame generation off. XeFG keeps its count, so nothing is rebuilt, and turns back on in microseconds;
+        // its first frame after that has no history and shows the real frame alone.
+        if (dynamic.generationOff != _generationOff)
+            SetGenerationOff(dynamic.generationOff);
+
+        targetCount = dynamic.count;
 
         if (_framesToInterpolate != targetCount)
         {
             LOG_INFO("Interpolation count changed {} -> {}", _framesToInterpolate, targetCount);
 
-            state.WAR_xefgRequestFGToggle = true;
+            // XeFG 3.x changes the count at the next frame, Dynamic MFG's own changes skip the FG toggle
+            if (!dynamicChange)
+                state.WAR_xefgRequestFGToggle = true;
 
 #ifndef DONT_USE_XMX
             ScopedSkipSpoofingGlobal skipSpoofingGlobal {};
@@ -1005,6 +988,25 @@ XeFG_Dx12::~XeFG_Dx12() { Shutdown(); }
 
 bool XeFG_Dx12::SetInterpolatedFrameCount(UINT interpolatedFrameCount) { return true; }
 
+void XeFG_Dx12::SetGenerationOff(bool off)
+{
+    if (_swapChainContext == nullptr || XeFGProxy::SetEnabled() == nullptr)
+        return;
+
+#ifndef DONT_USE_XMX
+    ScopedSkipSpoofingGlobal skipSpoofingGlobal {};
+#endif // !DONT_USE_XMX
+
+    // Only frame generation: OptiScaler's FG stays active and keeps dispatching, XeFG keeps its count
+    const auto result = XeFGProxy::SetEnabled()(_swapChainContext, !off);
+
+    if (result == XEFG_SWAPCHAIN_RESULT_SUCCESS)
+        _generationOff = off;
+
+    LOG_INFO("Dynamic MFG 1X: frame generation {}, result: {} ({})", off ? "off" : "on", magic_enum::enum_name(result),
+             (UINT) result);
+}
+
 void XeFG_Dx12::EvaluateState(ID3D12Device* device, FG_Constants& fgConstants)
 {
     LOG_FUNC();
@@ -1058,6 +1060,8 @@ void XeFG_Dx12::EvaluateState(ID3D12Device* device, FG_Constants& fgConstants)
     {
         LOG_DEBUG("!FGEnabled");
         Deactivate();
+        ReleaseResourceCopies();
+        _depthInvert.reset();
 
         state.clearCapturedHudlesses = true;
         Hudfix_Dx12::ResetCounters();
@@ -1106,6 +1110,8 @@ void XeFG_Dx12::ReleaseObjects()
     _mvFlip.reset();
     _depthFlip.reset();
     _depthInvert.reset();
+
+    ReleaseResourceCopies();
 }
 
 void XeFG_Dx12::CreateObjects(ID3D12Device* InDevice)
@@ -1637,11 +1643,12 @@ bool XeFG_Dx12::ReleaseSwapchain(HWND hwnd)
 
     if (!State::Instance().isShuttingDown)
     {
+        State::Instance().currentFGSwapchain = nullptr;
+
         if (_swapChainContext != nullptr)
             DestroySwapchainContext();
 
         _swapChainContext = nullptr;
-        State::Instance().currentFGSwapchain = nullptr;
     }
 
     ReleaseObjects();

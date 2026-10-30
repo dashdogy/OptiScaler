@@ -1,18 +1,20 @@
 #include "pch.h"
 #include "Amdxc64_Hooks.h"
 
-#include <fsr4/FSR4Upgrade.h>
+#include <fsr4/FSR4DriverProviderDx12.h>
 #include <ffx_antilag2_dx12.h>
 #include <proxies/KernelBase_Proxy.h>
 #include <proxies/Ntdll_Proxy.h>
 #include <low_latency/input/input_antilag2.h>
 #include <misc/IdentifyGpu.h>
-#include "Streamline_Hooks.h"
 
 #pragma endregion
 
 struct AmdExtD3DFactory : public IAmdExtD3DFactory
 {
+    IAmdExtD3DFactory* real = nullptr;
+    std::atomic<ULONG> refCount = 1;
+
     bool linux = false;
     FSR4Support fsr4Support {};
     FSR4Support realFsr4Support {};
@@ -27,8 +29,8 @@ struct AmdExtD3DFactory : public IAmdExtD3DFactory
 
             *ppvObject = Amdxc64Hooks::amdExtD3DShaderIntrinsics;
 
-            Amdxc64Hooks::o_amdExtD3DFactory->CreateInterface(pOuter, riid,
-                                                              (void**) &Amdxc64Hooks::o_amdExtD3DShaderIntrinsics);
+            if (real != nullptr)
+                real->CreateInterface(pOuter, riid, (void**) &Amdxc64Hooks::o_amdExtD3DShaderIntrinsics);
 
             LOG_INFO("Custom IAmdExtD3DShaderIntrinsics queried, returning custom AmdExtD3DShaderIntrinsics");
 
@@ -50,9 +52,9 @@ struct AmdExtD3DFactory : public IAmdExtD3DFactory
 
             return S_OK;
         }
-        else if (Amdxc64Hooks::o_amdExtD3DFactory)
+        else if (real != nullptr)
         {
-            return Amdxc64Hooks::o_amdExtD3DFactory->CreateInterface(pOuter, riid, ppvObject);
+            return real->CreateInterface(pOuter, riid, ppvObject);
         }
 
         return E_NOINTERFACE;
@@ -60,31 +62,36 @@ struct AmdExtD3DFactory : public IAmdExtD3DFactory
 
     HRESULT __stdcall QueryInterface(REFIID riid, void** ppvObject) override
     {
-        if (Amdxc64Hooks::o_amdExtD3DFactory)
-            return Amdxc64Hooks::o_amdExtD3DFactory->QueryInterface(riid, ppvObject);
+        if (ppvObject == nullptr)
+            return E_POINTER;
 
-        return E_NOTIMPL;
-    }
-    ULONG __stdcall AddRef(void) override
-    {
-        if (Amdxc64Hooks::o_amdExtD3DFactory)
-            return Amdxc64Hooks::o_amdExtD3DFactory->AddRef();
-
-        return 0;
-    }
-    ULONG __stdcall Release(void) override
-    {
-        if (Amdxc64Hooks::o_amdExtD3DFactory)
+        if (riid == __uuidof(IUnknown) || riid == __uuidof(IAmdExtD3DFactory))
         {
-            auto result = Amdxc64Hooks::o_amdExtD3DFactory->Release();
-
-            if (result == 0)
-                Amdxc64Hooks::o_amdExtD3DFactory = nullptr;
-
-            return result;
+            AddRef();
+            *ppvObject = this;
+            return S_OK;
         }
 
-        return 0;
+        if (real != nullptr)
+            return real->QueryInterface(riid, ppvObject);
+
+        *ppvObject = nullptr;
+        return E_NOINTERFACE;
+    }
+    ULONG __stdcall AddRef(void) override { return ++refCount; }
+    ULONG __stdcall Release(void) override
+    {
+        auto result = --refCount;
+
+        if (result == 0)
+        {
+            if (real != nullptr)
+                real->Release();
+
+            delete this;
+        }
+
+        return result;
     }
 };
 
@@ -147,21 +154,25 @@ HRESULT STDMETHODCALLTYPE Amdxc64Hooks::hkAmdExtD3DCreateInterface(IUnknown* pOu
     if (runFsr4Upgrade && riid == __uuidof(IAmdExtD3DFactory))
     {
         // Required for the custom AmdExtFfxApi, lack of it triggers visual glitches
-        if (amdExtD3DFactory == nullptr)
+        auto factory = new AmdExtD3DFactory();
+        factory->linux = State::Instance().isRunningOnLinux;
+        factory->fsr4Support = primaryGpu.fsr4Support;
+        factory->realFsr4Support = primaryGpu.realFsr4Support;
+        factory->fsr4ForcedSupport = primaryGpu.fsr4ForcedSupport;
+
+        if (o_AmdExtD3DCreateInterface != nullptr &&
+            FAILED(o_AmdExtD3DCreateInterface(pOuter, riid, (void**) &factory->real)))
         {
-            amdExtD3DFactory = new AmdExtD3DFactory();
-            amdExtD3DFactory->linux = State::Instance().isRunningOnLinux;
-            amdExtD3DFactory->fsr4Support = primaryGpu.fsr4Support;
-            amdExtD3DFactory->realFsr4Support = primaryGpu.realFsr4Support;
-            amdExtD3DFactory->fsr4ForcedSupport = primaryGpu.fsr4ForcedSupport;
+            factory->real = nullptr;
         }
 
-        *ppvObject = amdExtD3DFactory;
+        if (factory->real != nullptr)
+            HookFactory(factory->real);
 
-        LOG_INFO("IAmdExtD3DFactory queried, returning custom AmdExtD3DFactory");
+        LOG_INFO("IAmdExtD3DFactory queried, returning custom AmdExtD3DFactory: {:X}, real: {:X}", (size_t) factory,
+                 (size_t) factory->real);
 
-        if (o_AmdExtD3DCreateInterface != nullptr && o_amdExtD3DFactory == nullptr)
-            o_AmdExtD3DCreateInterface(pOuter, riid, (void**) &o_amdExtD3DFactory);
+        *ppvObject = factory;
 
         return S_OK;
     }
@@ -182,7 +193,6 @@ HRESULT STDMETHODCALLTYPE Amdxc64Hooks::hkAmdExtD3DCreateInterface(IUnknown* pOu
         return S_OK;
     }
 
-#ifdef LOW_LATENCY_INPUTS
     else if (riid == IID_IAmdExtAntiLagApi && giveGameAl2Proxy)
     {
         if (amdExtAntiLagApi == nullptr)
@@ -195,21 +205,156 @@ HRESULT STDMETHODCALLTYPE Amdxc64Hooks::hkAmdExtD3DCreateInterface(IUnknown* pOu
 
         return S_OK;
     }
-#else
-    else if (riid == IID_IAmdExtAntiLagApi && giveGameAl2Proxy &&
-             (StreamlineHooks::isReflexHooked() || State::Instance().activeFgInput == FGInput::NvngxFG ||
-              State::Instance().activeFgInput == FGInput::DLSSG))
-    {
-        *ppvObject = nullptr;
-
-        LOG_INFO("Killing native AL2");
-
-        return S_OK;
-    }
-#endif
 
     else if (o_AmdExtD3DCreateInterface != nullptr)
-        return o_AmdExtD3DCreateInterface(pOuter, riid, ppvObject);
+    {
+        auto result = o_AmdExtD3DCreateInterface(pOuter, riid, ppvObject);
+
+        if (SUCCEEDED(result) && riid == __uuidof(IAmdExtD3DFactory) && *ppvObject != nullptr)
+            HookFactory((IAmdExtD3DFactory*) *ppvObject);
+
+        return result;
+    }
 
     return E_NOINTERFACE;
+}
+
+void Amdxc64Hooks::HookFactory(IAmdExtD3DFactory* factory)
+{
+    if (o_FactoryCreateInterface != nullptr)
+        return;
+
+    auto vtable = *(void***) factory;
+    o_FactoryCreateInterface = (PFN_AmdExtD3DFactory_CreateInterface) vtable[3];
+
+    LOG_DEBUG("Hooking IAmdExtD3DFactory::CreateInterface");
+    DetourTransactionBegin();
+    DetourUpdateThread(GetCurrentThread());
+    DetourAttach(&(PVOID&) o_FactoryCreateInterface, hkFactoryCreateInterface);
+
+    auto detourResult = DetourTransactionCommit();
+    if (detourResult != NO_ERROR)
+    {
+        LOG_ERROR("Failed to attach detour: {:X}", detourResult);
+        o_FactoryCreateInterface = nullptr;
+    }
+}
+
+void Amdxc64Hooks::HookFlipMeter(IAmdExtFlipMeter* flipMeter)
+{
+    if (o_FlipMeterSetConfig != nullptr)
+        return;
+
+    auto vtable = *(void***) flipMeter;
+    o_FlipMeterRelease = (PFN_AmdExtFlipMeter_Release) vtable[2];
+    o_FlipMeterSetConfig = (PFN_AmdExtFlipMeter_Config) vtable[4];
+    o_FlipMeterGetConfig = (PFN_AmdExtFlipMeter_Config) vtable[5];
+
+    LOG_DEBUG("Hooking IAmdExtFlipMeter");
+    DetourTransactionBegin();
+    DetourUpdateThread(GetCurrentThread());
+    DetourAttach(&(PVOID&) o_FlipMeterRelease, hkFlipMeterRelease);
+    DetourAttach(&(PVOID&) o_FlipMeterSetConfig, hkFlipMeterSetConfig);
+    DetourAttach(&(PVOID&) o_FlipMeterGetConfig, hkFlipMeterGetConfig);
+
+    auto detourResult = DetourTransactionCommit();
+    if (detourResult != NO_ERROR)
+    {
+        LOG_ERROR("Failed to attach detour: {:X}", detourResult);
+        o_FlipMeterRelease = nullptr;
+        o_FlipMeterSetConfig = nullptr;
+        o_FlipMeterGetConfig = nullptr;
+    }
+}
+
+HRESULT Amdxc64Hooks::SetFlipMeterConfig(IAmdExtFlipMeter* flipMeter, const AmdExtFlipMeterConfig& requested)
+{
+    // Modify a copy so FSR keeps its requested state and doesn't try to re-apply it
+    auto config = requested;
+    if (Config::Instance()->FSRFGDisableFlipMetering.value_or_default())
+        config.mode = 0;
+
+    auto result = o_FlipMeterSetConfig(flipMeter, &config);
+
+    LOG_INFO("Flip meter requested mode: {}, applied mode: {}, flags: {:X}, result: {:X}", requested.mode, config.mode,
+             config.flags, (UINT) result);
+
+    if (SUCCEEDED(result))
+        State::Instance().amdFlipMeterMode = config.mode;
+
+    return result;
+}
+
+void Amdxc64Hooks::ApplyFlipMeterOverride()
+{
+    std::scoped_lock lock(flipMeterMutex);
+
+    if (flipMeter != nullptr && flipMeterRequested.has_value() && o_FlipMeterSetConfig != nullptr)
+        SetFlipMeterConfig(flipMeter, flipMeterRequested.value());
+}
+
+ULONG STDMETHODCALLTYPE Amdxc64Hooks::hkFlipMeterRelease(IAmdExtFlipMeter* This)
+{
+    std::scoped_lock lock(flipMeterMutex);
+
+    auto refCount = o_FlipMeterRelease(This);
+
+    if (refCount == 0 && This == flipMeter)
+    {
+        LOG_DEBUG("IAmdExtFlipMeter released");
+        flipMeter = nullptr;
+        flipMeterRequested.reset();
+        State::Instance().amdFlipMeterCreated = false;
+        State::Instance().amdFlipMeterMode = 0;
+    }
+
+    return refCount;
+}
+
+HRESULT STDMETHODCALLTYPE Amdxc64Hooks::hkFactoryCreateInterface(IAmdExtD3DFactory* This, IUnknown* pOuter, REFIID riid,
+                                                                 void** ppvObject)
+{
+    auto result = o_FactoryCreateInterface(This, pOuter, riid, ppvObject);
+
+    if (riid == __uuidof(IAmdExtFlipMeter))
+    {
+        LOG_INFO("IAmdExtFlipMeter created for swapchain: {:X}, result: {:X}", (size_t) pOuter, (UINT) result);
+
+        if (SUCCEEDED(result) && *ppvObject != nullptr)
+        {
+            HookFlipMeter((IAmdExtFlipMeter*) *ppvObject);
+
+            std::scoped_lock lock(flipMeterMutex);
+            flipMeter = (IAmdExtFlipMeter*) *ppvObject;
+            flipMeterRequested.reset();
+            State::Instance().amdFlipMeterCreated = true;
+        }
+    }
+
+    return result;
+}
+
+HRESULT STDMETHODCALLTYPE Amdxc64Hooks::hkFlipMeterSetConfig(IAmdExtFlipMeter* This, AmdExtFlipMeterConfig* config)
+{
+    std::scoped_lock lock(flipMeterMutex);
+
+    if (This == flipMeter)
+        flipMeterRequested = *config;
+
+    return SetFlipMeterConfig(This, *config);
+}
+
+// FSR reads the config back when SetConfig fails
+HRESULT STDMETHODCALLTYPE Amdxc64Hooks::hkFlipMeterGetConfig(IAmdExtFlipMeter* This, AmdExtFlipMeterConfig* config)
+{
+    std::scoped_lock lock(flipMeterMutex);
+
+    auto result = o_FlipMeterGetConfig(This, config);
+
+    LOG_DEBUG("Flip meter mode: {}, result: {:X}", config->mode, (UINT) result);
+
+    if (SUCCEEDED(result) && This == flipMeter)
+        State::Instance().amdFlipMeterMode = config->mode;
+
+    return result;
 }

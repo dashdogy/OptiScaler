@@ -7,8 +7,6 @@
 
 #include <nvapi/fakenvapi.h>
 #include <misc/IdentifyGpu.h>
-#include <hooks/Reflex_Hooks.h>
-#include <menu/menu_overlay_base.h>
 #include <framegen/nvngx/Nvngx_FG.h>
 #include <framegen/xefg/XeFG_Dx12.h>
 #include <proxies/KernelBase_Proxy.h>
@@ -18,6 +16,7 @@
 #include <sl1_reflex.h>
 #include <magic_enum.hpp>
 #include "detours/detours.h"
+#include <shaders/reproject/mouseInputs/InputCollection.h>
 
 #include <intrin.h>
 #pragma intrinsic(_ReturnAddress)
@@ -359,8 +358,8 @@ static int OutputMaxInterpolationCount()
 {
     auto& state = State::Instance();
 
-    if (state.currentFG != nullptr && state.currentFG->GetMaxInterpolationCount() > 1)
-        return state.currentFG->GetMaxInterpolationCount();
+    if (auto fg = state.CurrentFG(); fg != nullptr && fg->GetMaxInterpolationCount() > 1)
+        return fg->GetMaxInterpolationCount();
 
     if (state.activeFgOutput == FGOutput::XeFG)
     {
@@ -384,7 +383,7 @@ static int OutputMaxInterpolationCount()
 // Reports Opti's FG output capabilities to the game when DLSSG is used as FG Input
 static void FillDlssgInputState(sl::DLSSGState& state)
 {
-    auto fg = State::Instance().currentFG;
+    auto fg = State::Instance().CurrentFG();
 
     if (fg != nullptr && fg->IsActive() && !fg->IsPaused())
         state.numFramesActuallyPresented = fg->GetInterpolatedFrameCount() + 1;
@@ -465,9 +464,9 @@ sl::Result StreamlineHooks::hkslSetFeatureLoaded(sl::Feature feature, bool loade
 sl::Result StreamlineHooks::hkslSetTag(const sl::ViewportHandle& viewport, const sl::ResourceTag* tags,
                                        uint32_t numTags, sl::CommandBuffer* cmdBuffer)
 {
-    if (renderApi == sl::RenderAPI::eD3D11 || renderApi == sl::RenderAPI::eVulkan)
+    if (renderApi == sl::RenderAPI::eD3D11)
     {
-        LOG_ERROR("hkslSetTag only supports DX12");
+        LOG_ERROR("hkslSetTag doesn't support DX11");
         return o_slSetTag(viewport, tags, numTags, cmdBuffer);
     }
 
@@ -521,7 +520,7 @@ sl::Result StreamlineHooks::hkslSetTag(const sl::ViewportHandle& viewport, const
         }
 
         // Cyberpunk hudless state fix for RDNA 2
-        if (State::Instance().gameQuirks & GameQuirk::CyberpunkHudlessState &&
+        if (State::Instance().gameQuirks & GameQuirk::CyberpunkHudlessState && renderApi != sl::RenderAPI::eVulkan &&
             tags[i].resource->state ==
                 (D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) &&
             tags[i].type == sl::kBufferTypeHUDLessColor)
@@ -536,7 +535,7 @@ sl::Result StreamlineHooks::hkslSetTag(const sl::ViewportHandle& viewport, const
              tags[i].type == sl::kBufferTypeMotionVectors || tags[i].type == sl::kBufferTypeUIColorAndAlpha ||
              tags[i].type == sl::kBufferTypeBidirectionalDistortionField))
         {
-            State::Instance().slFGInputs.reportResource(tags[i], (ID3D12GraphicsCommandList*) cmdBuffer, 0);
+            State::Instance().slFGInputs.reportResource(tags[i], cmdBuffer, 0);
         }
         else if (State::Instance().activeFgInput == FGInput::NvngxFG)
         {
@@ -552,9 +551,9 @@ sl::Result StreamlineHooks::hkslSetTagForFrame(const sl::FrameToken& frame, cons
                                                const sl::ResourceTag* resources, uint32_t numResources,
                                                sl::CommandBuffer* cmdBuffer)
 {
-    if (renderApi == sl::RenderAPI::eD3D11 || renderApi == sl::RenderAPI::eVulkan)
+    if (renderApi == sl::RenderAPI::eD3D11)
     {
-        LOG_ERROR("hkslSetTagForFrame only supports DX12");
+        LOG_ERROR("hkslSetTagForFrame doesn't support DX11");
         return o_slSetTagForFrame(frame, viewport, resources, numResources, cmdBuffer);
     }
 
@@ -615,8 +614,7 @@ sl::Result StreamlineHooks::hkslSetTagForFrame(const sl::FrameToken& frame, cons
              resources[i].type == sl::kBufferTypeMotionVectors || resources[i].type == sl::kBufferTypeUIColorAndAlpha ||
              resources[i].type == sl::kBufferTypeBidirectionalDistortionField))
         {
-            State::Instance().slFGInputs.reportResource(resources[i], (ID3D12GraphicsCommandList*) cmdBuffer,
-                                                        (uint32_t) frame);
+            State::Instance().slFGInputs.reportResource(resources[i], cmdBuffer, (uint32_t) frame);
         }
         else if (State::Instance().activeFgInput == FGInput::NvngxFG)
         {
@@ -650,8 +648,7 @@ sl::Result StreamlineHooks::hkslEvaluateFeature(sl::Feature feature, const sl::F
                     tag->type == sl::kBufferTypeMotionVectors || tag->type == sl::kBufferTypeUIColorAndAlpha ||
                     tag->type == sl::kBufferTypeBidirectionalDistortionField)
                 {
-                    State::Instance().slFGInputs.reportResource(*tag, (ID3D12GraphicsCommandList*) cmdBuffer,
-                                                                (uint32_t) frame);
+                    State::Instance().slFGInputs.reportResource(*tag, cmdBuffer, (uint32_t) frame);
                 }
             }
         }
@@ -1351,20 +1348,6 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
         newOptions.dynamicTargetFrameRate = Config::Instance()->FGDLSSGFramerateTargetDMFG.value();
     }
 
-    if (state.swapchainApi == API::Vulkan)
-    {
-        // Only matters for Vulkan, DX doesn't use this delay
-        if (dlssgPotentiallyActive && !MenuOverlayBase::IsVisible())
-            state.delayMenuRenderBy = 10;
-
-        if (MenuOverlayBase::IsVisible())
-        {
-            newOptions.mode = sl::DLSSGMode::eOff;
-            newOptions.flags |= sl::DLSSGFlags::eRetainResourcesWhenOff;
-            ReflexHooks::setDlssgFrameCount(0);
-        }
-    }
-
     LOG_TRACE("DLSSG Modified Mode: {}", magic_enum::enum_name(newOptions.mode));
 
     if (dlssgPotentiallyActive && state.streamlineVersion >= feature_version { 2, 7, 1 })
@@ -1744,6 +1727,14 @@ sl::Result StreamlineHooks::hkslPCLSetMarker(sl::PCLMarker marker, const sl::Fra
     if (o_slPCLSetMarker == nullptr)
         return sl::Result::eErrorFeatureMissing;
 
+    // Indiana Jones sends a nullptr on startup :)
+    const void* volatile framePtr = &frame;
+    if (framePtr == nullptr)
+    {
+        LOG_WARN("Null frame token for marker {}", (uint32_t) marker);
+        return o_slPCLSetMarker(marker, frame);
+    }
+
     // if (State::Instance().activeFgOutput == FGOutput::DLSSG && StreamlineProxy::IsD3D12Inited() &&
     //     Config::Instance()->FGDLSSGUseGamesReflexMarkers.value_or_default())
     //{
@@ -1768,11 +1759,15 @@ sl::Result StreamlineHooks::hkslPCLSetMarker(sl::PCLMarker marker, const sl::Fra
             auto result = o_slGetNewFrameToken(newFramePointer, &newFrameId);
 
             LOG_WARN("Simulation start marker sent after end marker, offset: {}", correction_offset);
+            InputCollection::getInstance().startCollectingForFrame(newFrameId);
 
             result = o_slPCLSetMarker(marker, *newFramePointer);
             return result;
         }
     }
+
+    if (marker == sl::PCLMarker::eSimulationStart)
+        InputCollection::getInstance().startCollectingForFrame(frame);
 
     if (State::Instance().activeFgInput == FGInput::DLSSG)
     {
@@ -2091,6 +2086,8 @@ void StreamlineHooks::hookInterposer(HMODULE slInterposer)
                 KernelBaseProxy::GetProcAddress_()(slInterposer, "slGetFeatureVersion"));
             o_slGetFeatureFunction = reinterpret_cast<decltype(&slGetFeatureFunction)>(
                 KernelBaseProxy::GetProcAddress_()(slInterposer, "slGetFeatureFunction"));
+            o_slSetFeatureLoaded = reinterpret_cast<decltype(&slSetFeatureLoaded)>(
+                KernelBaseProxy::GetProcAddress_()(slInterposer, "slSetFeatureLoaded"));
             o_slAllocateResources = reinterpret_cast<decltype(&slAllocateResources)>(
                 KernelBaseProxy::GetProcAddress_()(slInterposer, "slAllocateResources"));
             o_slFreeResources = reinterpret_cast<decltype(&slFreeResources)>(
@@ -2170,6 +2167,7 @@ void StreamlineHooks::hookInterposer(HMODULE slInterposer)
                     o_slGetFeatureRequirements = nullptr;
                     o_slGetFeatureVersion = nullptr;
                     o_slGetFeatureFunction = nullptr;
+                    o_slSetFeatureLoaded = nullptr;
                 }
             }
         }

@@ -1,9 +1,11 @@
 #include "pch.h"
 #include "FSR3_Dx12_FG.h"
+#include "Upscaler_Inputs.h"
 
 #include "Config.h"
 #include "Util.h"
 #include "MathUtils.h"
+#include <misc/DeferredRelease.h>
 
 #include "resource.h"
 #include "NVNGX_Parameter.h"
@@ -314,8 +316,8 @@ static bool CreateBufferResource(ID3D12Device* InDevice, ID3D12Resource* InResou
 
         if (bufDesc.Width != inDesc.Width || bufDesc.Height != inDesc.Height || bufDesc.Format != inDesc.Format)
         {
-            (*OutResource)->Release();
-            (*OutResource) = nullptr;
+            // FG can still be using it
+            DeferredRelease::Release(*OutResource);
             LOG_WARN("Release {}x{}, new one: {}x{}", bufDesc.Width, bufDesc.Height, inDesc.Width, inDesc.Height);
         }
         else
@@ -339,6 +341,16 @@ static bool CreateBufferResource(ID3D12Device* InDevice, ID3D12Resource* InResou
 
     LOG_DEBUG("Created new one: {}x{}", inDesc.Width, inDesc.Height);
     return true;
+}
+
+// Game's FG context is gone, nothing uses these until it's recreated
+static void ReleaseBuffers()
+{
+    for (size_t i = 0; i < BUFFER_COUNT; i++)
+    {
+        DeferredRelease::Release(_hudless[i]);
+        DeferredRelease::Release(_interpolation[i]);
+    }
 }
 
 static void ResourceBarrier(ID3D12GraphicsCommandList* InCommandList, ID3D12Resource* InResource,
@@ -681,6 +693,7 @@ static Fsr3::FfxErrorCode hkffxFrameInterpolationContextDestroy(FfxFrameInterpol
     {
         LOG_INFO("Destroying FG Context: {:X}", (size_t) State::Instance().currentFG);
         State::Instance().currentFG->DestroyFGContext();
+        ReleaseBuffers();
     }
 
     return Fsr3::FFX_OK;
@@ -1312,65 +1325,21 @@ void FSR3FG::SetUpscalerInputs(ID3D12GraphicsCommandList* InCmdList, NVSDK_NGX_P
 
     fg->EvaluateState(_device, _fgConst);
 
-    // FSR Camera values
-    float cameraNear = 0.0f;
-    float cameraFar = 0.0f;
-    float cameraVFov = 0.0f;
-    float meterFactor = 0.0f;
+    // Not needed while FG or the option is off, its destructor defers the buffer release
+    if (DepthScale != nullptr &&
+        (!Config::Instance()->IsFGEnabled() || !Config::Instance()->FGEnableDepthScale.value_or_default()))
+    {
+        delete DepthScale;
+        DepthScale = nullptr;
+    }
+
     float mvScaleX = 0.0f;
     float mvScaleY = 0.0f;
     float jitterX = 0.0f;
     float jitterY = 0.0f;
 
-    float tempCameraNear = 0.0f;
-    float tempCameraFar = 0.0f;
-
-    auto& state = State::Instance();
-    auto& cfg = *Config::Instance();
-    const auto& ngxParams = *InParameters;
-
-    ngxParams.Get(OptiKeys::FSR_NearPlane, &tempCameraNear);
-    ngxParams.Get(OptiKeys::FSR_FarPlane, &tempCameraFar);
-
-    if (!cfg.FsrUseFsrInputValues.value_or_default() || (tempCameraNear == 0.0f && tempCameraFar == 0.0f))
-    {
-        if (feature->DepthInverted())
-        {
-            cameraFar = cfg.FsrCameraNear.value_or_default();
-            cameraNear = cfg.FsrCameraFar.value_or_default();
-        }
-        else
-        {
-            cameraFar = cfg.FsrCameraFar.value_or_default();
-            cameraNear = cfg.FsrCameraNear.value_or_default();
-        }
-    }
-    else
-    {
-        cameraNear = tempCameraNear;
-        cameraFar = tempCameraFar;
-    }
-
-    if (!cfg.FsrUseFsrInputValues.value_or_default() ||
-        ngxParams.Get(OptiKeys::FSR_CameraFovVertical, &cameraVFov) != NVSDK_NGX_Result_Success)
-    {
-        if (cfg.FsrVerticalFov.has_value())
-            cameraVFov = GetRadiansFromDeg(cfg.FsrVerticalFov.value());
-        else if (cfg.FsrHorizontalFov.value_or_default() > 0.0f)
-        {
-            const float hFovRad = GetRadiansFromDeg(cfg.FsrHorizontalFov.value());
-            cameraVFov =
-                GetVerticalFovFromHorizontal(hFovRad, (float) feature->TargetWidth(), (float) feature->TargetHeight());
-        }
-        else
-            cameraVFov = GetRadiansFromDeg(60);
-    }
-
-    if (!cfg.FsrUseFsrInputValues.value_or_default())
-        ngxParams.Get(OptiKeys::FSR_ViewSpaceToMetersFactor, &meterFactor);
-
-    State::Instance().lastFsrCameraFar = cameraFar;
-    State::Instance().lastFsrCameraNear = cameraNear;
+    // FSR Camera values
+    auto camera = UpscalerInputs::GetCameraValues(*InParameters, feature);
 
     int reset = 0;
     InParameters->Get(NVSDK_NGX_Parameter_Reset, &reset);
@@ -1381,7 +1350,7 @@ void FSR3FG::SetUpscalerInputs(ID3D12GraphicsCommandList* InCmdList, NVSDK_NGX_P
     InParameters->Get(NVSDK_NGX_Parameter_Jitter_Offset_Y, &jitterY);
 
     auto aspectRatio = (float) feature->DisplayWidth() / (float) feature->DisplayHeight();
-    fg->SetCameraValues(cameraNear, cameraFar, cameraVFov, aspectRatio, meterFactor);
+    fg->SetCameraValues(camera.cameraNear, camera.cameraFar, camera.cameraVFov, aspectRatio, camera.meterFactor);
     fg->SetFrameTimeDelta(State::Instance().lastFGFrameTime);
     fg->SetMVScale(mvScaleX, mvScaleY);
     fg->SetJitter(jitterX, jitterY);
@@ -1450,8 +1419,8 @@ void FSR3FG::SetUpscalerInputs(ID3D12GraphicsCommandList* InCmdList, NVSDK_NGX_P
                 if (DepthScale == nullptr)
                     DepthScale = new DS_Dx12("Depth Scale", _device);
 
-                if (DepthScale->CreateBufferResource(_device, paramDepth, feature->DisplayWidth(),
-                                                     feature->DisplayHeight(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS) &&
+                if (DepthScale->CreateBufferResource(_device, paramDepth, 0, 0,
+                                                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS) &&
                     DepthScale->Buffer() != nullptr)
                 {
                     DepthScale->SetBufferState(InCmdList, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);

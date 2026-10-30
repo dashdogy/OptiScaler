@@ -17,7 +17,10 @@
 
 #include <misc/IdentifyGpu.h>
 #include <hooks/Reflex_Hooks.h>
+#include <low_latency/input/input_common.h>
 #include <menu/menu_overlay_dx.h>
+#include <imgui/ImGuiNotify.hpp>
+#include <proxies/KernelBase_Proxy.h>
 
 #include <d3d12.h>
 #include <detours/detours.h>
@@ -66,6 +69,54 @@ static bool WaitForQueueIdle(ID3D12CommandQueue* queue, ID3D12Fence* fence, HAND
         LOG_ERROR("FG/present queue idle wait failed. fence {}, completed {}, waitResult {:X}", waitValue,
                   fence->GetCompletedValue(), waitResult);
         return false;
+    }
+
+    return true;
+}
+
+// The game's own FSR Frame Generation creates this swapchain, XeFG under it crashes (Modern Warfare 4). With FG input
+// FSR-FG OptiScaler replaces that swapchain itself.
+static bool CreatedByGameFsrFg()
+{
+    const auto ffx = KernelBaseProxy::GetModuleHandleW_()(L"amd_fidelityfx_framegeneration_dx12.dll");
+
+    if (ffx == nullptr)
+        return false;
+
+    void* frames[24] {};
+    const auto count = CaptureStackBackTrace(1, (DWORD) std::size(frames), frames, nullptr);
+
+    for (USHORT i = 0; i < count; i++)
+    {
+        HMODULE module = nullptr;
+
+        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               (LPCWSTR) frames[i], &module) &&
+            module == ffx)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool RefuseUnderGameFsrFg()
+{
+    if (State::Instance().activeFgOutput != FGOutput::XeFG || !CreatedByGameFsrFg())
+        return false;
+
+    LOG_WARN("The game's FSR Frame Generation creates this swapchain, leaving it to the game: turn the game's frame "
+             "generation off or set FG Input to FSR-FG for XeFG");
+
+    static bool shown = false;
+
+    if (!shown)
+    {
+        shown = true;
+        ImGui::InsertNotification({ ImGuiToastType::Warning, 15000,
+                                    "The game's FSR Frame Generation is on: XeFG can't run under it.\n"
+                                    "Turn the game's frame generation off, or set FG Input to FSR-FG." });
     }
 
     return true;
@@ -134,6 +185,9 @@ HRESULT FGHooks::CreateSwapChain(IDXGIFactory* pFactory, IUnknown* pDevice, DXGI
         return E_NOINTERFACE;
     }
 
+    if (RefuseUnderGameFsrFg())
+        return E_NOINTERFACE;
+
     // Check if it's Dx12
     ID3D12CommandQueue* cq = nullptr;
     if (pDevice->QueryInterface(IID_PPV_ARGS(&cq)) != S_OK)
@@ -188,6 +242,8 @@ HRESULT FGHooks::CreateSwapChain(IDXGIFactory* pFactory, IUnknown* pDevice, DXGI
             pDesc->SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
         }
 
+        scResult = fg->CreateSwapchain(pFactory, cq, pDesc, ppSwapChain, true);
+
         // Looks like game is creating new swapchain,
         // without releasing old one, be sure gpu is in idle state
         if (State::Instance().currentFGSwapchain != nullptr)
@@ -208,8 +264,6 @@ HRESULT FGHooks::CreateSwapChain(IDXGIFactory* pFactory, IUnknown* pDevice, DXGI
 
             oldSwapChain = State::Instance().currentFGSwapchain;
         }
-
-        scResult = fg->CreateSwapchain(pFactory, cq, pDesc, ppSwapChain, true);
 
         if (Config::Instance()->FGDontUseSwapchainBuffers.value_or_default())
             State::Instance().skipHeapCapture = false;
@@ -243,6 +297,9 @@ HRESULT FGHooks::CreateSwapChainForHwnd(IDXGIFactory* pFactory, IUnknown* pDevic
         LOG_WARN("Can't init FG Feature or invalid FGOutput setting!");
         return E_NOINTERFACE;
     }
+
+    if (RefuseUnderGameFsrFg())
+        return E_NOINTERFACE;
 
     // Check if it's Dx12
     ID3D12CommandQueue* cq = nullptr;
@@ -299,6 +356,8 @@ HRESULT FGHooks::CreateSwapChainForHwnd(IDXGIFactory* pFactory, IUnknown* pDevic
             pDesc->SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
         }
 
+        scResult = fg->CreateSwapchain1(pFactory, cq, hWnd, pDesc, pFullscreenDesc, ppSwapChain, true);
+
         // Looks like game is creating new swapchain,
         // without releasing old one, be sure gpu is in idle state
         if (State::Instance().currentFGSwapchain != nullptr)
@@ -319,8 +378,6 @@ HRESULT FGHooks::CreateSwapChainForHwnd(IDXGIFactory* pFactory, IUnknown* pDevic
 
             oldSwapChain = State::Instance().currentFGSwapchain;
         }
-
-        scResult = fg->CreateSwapchain1(pFactory, cq, hWnd, pDesc, pFullscreenDesc, ppSwapChain, true);
 
         if (Config::Instance()->FGDontUseSwapchainBuffers.value_or_default())
             State::Instance().skipHeapCapture = false;
@@ -660,6 +717,13 @@ HRESULT FGHooks::hkResizeBuffers(IDXGISwapChain* This, UINT BufferCount, UINT Wi
         }
     }
 
+    // DLSSG creates its swapchain with ALLOW_TEARING and DXGI rejects resizes that add or remove it
+    if (State::Instance().activeFgOutput == FGOutput::DLSSG && !(SwapChainFlags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING))
+    {
+        LOG_DEBUG("Keeping DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING for DLSSG");
+        SwapChainFlags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+    }
+
     LOG_DEBUG("BufferCount: {}, Width: {}, Height: {}, NewFormat:{}, SwapChainFlags: {:X}", BufferCount, Width, Height,
               (UINT) NewFormat, SwapChainFlags);
 
@@ -899,6 +963,13 @@ HRESULT FGHooks::hkResizeBuffers1(IDXGISwapChain3* This, UINT BufferCount, UINT 
                 SwapChainFlags = State::Instance().SCLastFlags;
             }
         }
+    }
+
+    // DLSSG creates its swapchain with ALLOW_TEARING and DXGI rejects resizes that add or remove it
+    if (State::Instance().activeFgOutput == FGOutput::DLSSG && !(SwapChainFlags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING))
+    {
+        LOG_DEBUG("Keeping DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING for DLSSG");
+        SwapChainFlags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
     }
 
     LOG_DEBUG("BufferCount: {}, Width: {}, Height: {}, NewFormat:{}, SwapChainFlags: {:X}, Caller: {}", BufferCount,
@@ -1179,10 +1250,8 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
 
         LOG_DEBUG("flags: {:X}, Frametime: {}", Flags, ftDelta);
 
-#ifdef LOW_LATENCY_INPUTS
         IUnknown* device = state.currentD3D12Device ? state.currentD3D12Device : (IUnknown*) state.currentD3D11Device;
         InputCommon::mark_present_start(device);
-#endif
     }
 
     IFGFeature* fg = state.currentFG;
@@ -1193,7 +1262,8 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         {
             std::optional<double> upscalerTimeOpt {};
 
-            if (state.swapchainInteropApi == SwapchainInteropApi::Dx11wDx12 && state.currentD3D11Device != nullptr)
+            if (state.swapchainInteropApi == SwapchainInteropApi::Dx11wDx12 && state.currentD3D11Device != nullptr &&
+                (currentFeature->Api() == API::DX11 || currentFeature->IsWithDx12()))
             {
                 ID3D11DeviceContext* context = nullptr;
                 state.currentD3D11Device->GetImmediateContext(&context);
@@ -1202,6 +1272,16 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
                     currentFeature->ReadDetailedGpuTimes(context, state.detailedGpuTimes);
 
                 context->Release();
+            }
+            else if (state.swapchainInteropApi == SwapchainInteropApi::Dx11wDx12 &&
+                     currentFeature->Api() == API::DX12 && !currentFeature->IsWithDx12() &&
+                     state.currentCommandQueue != nullptr)
+            {
+                if (upscalerTimeOpt = currentFeature->ReadUpscalerTime(state.currentCommandQueue);
+                    upscalerTimeOpt.has_value())
+                {
+                    currentFeature->ReadDetailedGpuTimes(state.currentCommandQueue, state.detailedGpuTimes);
+                }
             }
             else if (state.swapchainInteropApi == SwapchainInteropApi::None && state.currentCommandQueue != nullptr)
             {
@@ -1260,12 +1340,20 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
                 tokenResult = StreamlineProxy::GetNewFrameToken()(localToken, &frameId);
 
                 if (tokenResult == sl::Result::eOk)
+                {
+                    ScopedOptiScalerReflex optiScalerCall {};
                     StreamlineProxy::PCLSetMarker()(sl::PCLMarker::ePresentStart, *localToken);
+                }
             }
         }
     }
 
-    if (willPresent && fgFeatureActive)
+    // The game's FSR FG present callback draws its UI on every present, also while frame generation is off
+    // (menus, pause): AMD's swapchain calls it on that path too. Present() submits the UI command list.
+    const bool fsrFgUi = (state.activeFgInput == FGInput::FSRFG || state.activeFgInput == FGInput::FSRFG30) &&
+                         state.swapchainInteropApi == SwapchainInteropApi::None;
+
+    if (willPresent && fg != nullptr && (fgFeatureActive || fsrFgUi))
     {
         if (state.activeFgInput == FGInput::FSRFG)
             ffxPresentCallback();
@@ -1315,15 +1403,47 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         LOG_DEBUG("Final SyncInterval: {}", SyncInterval);
     }
 
-    // Used at wrapped_swapchain LocalPresent to determine is frame is interpolated or not
-    if (willPresent)
-        state.fgPresentIsCalled = true;
+    // FSR-FG and XeFG with the Reflex output: the game's present as DLSSG reports it
+    ID3D12CommandQueue* gameQueue = nullptr;
+    uint32_t frameMultiplier = 1;
+    void* xefgContext = nullptr;
+    uint64_t xefgFrameId = 0;
+
+    if (auto fg = state.currentFG; willPresent && fg != nullptr &&
+                                   (state.activeFgOutput == FGOutput::FSRFG || state.activeFgOutput == FGOutput::XeFG))
+    {
+        gameQueue = fg->GetCommandQueue();
+        frameMultiplier = fg->IsActive() && !fg->IsPaused() ? fg->GetInterpolatedFrameCount() + 1 : 1;
+        InputCommon::fg_game_present(gameQueue, false, frameMultiplier);
+
+        if (state.activeFgOutput == FGOutput::XeFG)
+        {
+            xefgContext = fg->SwapchainContext();
+            xefgFrameId = InputCommon::xefg_marked_frame_id();
+        }
+    }
 
     HRESULT result;
+    const auto presentStart = Util::MillisecondsNow();
     if (pPresentParameters == nullptr)
         result = o_FGSCPresent(This, SyncInterval, Flags);
     else
         result = o_FGSCPresent1((IDXGISwapChain1*) This, SyncInterval, Flags, pPresentParameters);
+
+    if (gameQueue != nullptr)
+        InputCommon::fg_game_present(gameQueue, true, frameMultiplier);
+
+    // How many frames XeFG sends to its presenter for the batch it marked in this present
+    if (xefgContext != nullptr && XeFGProxy::GetLastPresentStatus() != nullptr)
+    {
+        xefg_swapchain_present_status_t status {};
+
+        if (XeFGProxy::GetLastPresentStatus()((xefg_swapchain_handle_t) xefgContext, &status) ==
+            XEFG_SWAPCHAIN_RESULT_SUCCESS)
+        {
+            InputCommon::xefg_present_status(xefgFrameId, status.framesPresented);
+        }
+    }
 
     if (result == S_OK)
     {
@@ -1340,9 +1460,13 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         willPresent && state.activeFgOutput == FGOutput::DLSSG)
     {
         if (StreamlineProxy::PCLSetMarker() != nullptr)
+        {
+            ScopedOptiScalerReflex optiScalerCall {};
             StreamlineProxy::PCLSetMarker()(sl::PCLMarker::ePresentEnd, *localToken);
+        }
 
         LOG_DEBUG("Calling ReflexSleep");
+        ScopedOptiScalerReflex optiScalerCall {};
         StreamlineProxy::ReflexSleep()(*localToken);
     }
 
@@ -1351,10 +1475,13 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
 
     // DXVK's DXGI presents through Vulkan where the limiter already sleeps
     if (willPresent && !state.reflexLimitsFps && state.activeFgOutput != FGOutput::NoFG &&
-        !IdentifyGpu::getPrimaryGpu().dxgiIsDxvk && !XellHooks::canLimit())
+        !IdentifyGpu::getPrimaryGpu().dxgiIsDxvk && !InputCommon::can_limit_fps())
     {
         FrameLimit::sleep(fg != nullptr ? fg->IsActive() && !fg->IsPaused() : false);
     }
+
+    if (willPresent)
+        state.lastFGPresentMs = Util::MillisecondsNow() - presentStart;
 
     if ((config->SimulateWaitableObject.value_or_default() ||
          (state.gameEngine == GameEngineType::Unity && state.activeFgOutput == FGOutput::XeFG)) &&

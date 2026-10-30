@@ -32,6 +32,7 @@ struct Luid
 std::filesystem::path ExePath();
 std::filesystem::path DllPath();
 std::optional<std::filesystem::path> NvngxPath();
+std::filesystem::path ReShadePath();
 
 double MillisecondsNow();
 std::wstring ToLower(std::wstring value);
@@ -47,6 +48,7 @@ std::optional<std::filesystem::path> FindFilePath(const std::filesystem::path& s
                                                   const std::filesystem::path& fileName);
 std::string WhoIsTheCaller(void* returnAddress);
 HMODULE GetCallerModule(void* returnAddress);
+std::filesystem::path ModulePath(HMODULE module);
 MonitorInfo GetMonitorInfoForWindow(HWND hwnd);
 MonitorInfo GetMonitorInfoForOutput(IDXGIOutput* pOutput);
 int GetActiveRefreshRate(HWND hwnd);
@@ -58,6 +60,8 @@ void LoadProxyLibrary(const std::wstring& name, const std::wstring& optiPath, co
 
 std::map<Luid, std::filesystem::path> GetDriverStore();
 uint64_t GetTimestamp();
+
+void SetFlagEnvVar(const wchar_t* name, bool enabled);
 
 template <typename T> void DelayedDestroy(std::unique_ptr<T> ptr)
 {

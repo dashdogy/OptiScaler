@@ -3,6 +3,9 @@
 #include <State.h>
 #include <Config.h>
 
+#include <hudfix/Hudfix_Dx12.h>
+#include <misc/DeferredRelease.h>
+
 #include <magic_enum.hpp>
 
 bool IFGFeature_Dx12::GetResourceCopy(FG_ResourceType type, D3D12_RESOURCE_STATES bufferState, ID3D12Resource* output)
@@ -269,6 +272,35 @@ void IFGFeature_Dx12::NewFrame()
     _lastFGFramePresentId = _fgFramePresentId;
 }
 
+void IFGFeature_Dx12::ReleaseResourceCopies()
+{
+    for (size_t i = 0; i < BUFFER_COUNT; i++)
+    {
+        std::unique_lock<std::shared_mutex> lock(_resourceMutex[i]);
+
+        bool released = false;
+
+        // Entries are kept, callbacks without the lock index the map
+        for (auto& [type, copy] : _resourceCopy[i])
+        {
+            if (copy == nullptr)
+                continue;
+
+            DeferredRelease::Release(copy);
+            released = true;
+        }
+
+        // Frame resources can point at the released copies
+        if (released)
+            _frameResources[i].clear();
+    }
+
+    _mvFlip.reset();
+    _depthFlip.reset();
+
+    Hudfix_Dx12::ReleaseBuffers();
+}
+
 void IFGFeature_Dx12::FlipResource(Dx12Resource* resource)
 {
     auto type = resource->type;
@@ -356,8 +388,8 @@ bool IFGFeature_Dx12::CreateBufferResourceWithSize(ID3D12Device* device, ID3D12R
         if (bufDesc.Width != width || bufDesc.Height != height || bufDesc.Format != inDesc.Format ||
             bufDesc.Flags != inDesc.Flags)
         {
-            (*target)->Release();
-            (*target) = nullptr;
+            // Previous frames can still be using it
+            DeferredRelease::Release(*target);
         }
         else
         {
@@ -468,16 +500,13 @@ bool IFGFeature_Dx12::CreateBufferResource(ID3D12Device* device, ID3D12Resource*
 
     if (*target != nullptr)
     {
-        //(*target)->Release();
-        //(*target) = nullptr;
-
         auto bufDesc = (*target)->GetDesc();
 
         if (bufDesc.Width != inDesc.Width || bufDesc.Height != inDesc.Height || bufDesc.Format != inDesc.Format ||
             bufDesc.Flags != inDesc.Flags)
         {
-            (*target)->Release();
-            (*target) = nullptr;
+            // Previous frames can still be using it
+            DeferredRelease::Release(*target);
         }
         else
         {
@@ -556,18 +585,6 @@ bool IFGFeature_Dx12::CreateSwapchain(IDXGIFactory* factory, ID3D12CommandQueue*
         {
             LOG_INFO("Releasing old swapchain");
             ReleaseSwapchain(_hwnd);
-
-            // Not sure why but XeFG sometimes doesn't release the swapchain properly
-            // so we force release it here to be able to recreate swapchain for same hwnd
-            if (State::Instance().currentRealSwapchain != nullptr)
-            {
-                UINT release = 0;
-                do
-                {
-                    release = State::Instance().currentRealSwapchain->Release();
-                    LOG_DEBUG("Releasing swapchain, ref count: {}", release);
-                } while (release > 0);
-            }
         }
         else
         {
@@ -600,18 +617,6 @@ bool IFGFeature_Dx12::CreateSwapchain1(IDXGIFactory* factory, ID3D12CommandQueue
         {
             LOG_INFO("Releasing old swapchain");
             ReleaseSwapchain(_hwnd);
-
-            // Not sure why but XeFG sometimes doesn't release the swapchain properly
-            // so we force release it here to be able to recreate swapchain for same hwnd
-            if (State::Instance().currentRealSwapchain != nullptr)
-            {
-                UINT release = 0;
-                do
-                {
-                    release = State::Instance().currentRealSwapchain->Release();
-                    LOG_DEBUG("Releasing swapchain, ref count: {}", release);
-                } while (release > 0);
-            }
         }
         else
         {

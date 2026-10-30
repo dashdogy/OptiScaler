@@ -28,6 +28,8 @@ void Reprojection_Dx12::ReleaseObjects()
     _hudlessCompare.reset();
     _mvFlip.reset();
     _depthFlip.reset();
+
+    ReleaseResourceCopies();
 }
 
 void Reprojection_Dx12::CreateObjects(ID3D12Device* InDevice)
@@ -192,6 +194,8 @@ void Reprojection_Dx12::EvaluateState(ID3D12Device* device, FG_Constants& fgCons
     else
     {
         Deactivate();
+        ReleaseResourceCopies();
+        _reproject.reset();
     }
 
     if (State::Instance().fgChanged)
@@ -266,6 +270,7 @@ bool Reprojection_Dx12::Present()
     {
         auto hudless = GetResource(FG_ResourceType::HudlessColor, fIndex);
         auto depth = GetResource(FG_ResourceType::Depth, fIndex);
+        auto velocity = GetResource(FG_ResourceType::Velocity, fIndex);
         if (hudless && (hudless->validity != FG_ResourceValidity::ValidNow) && depth &&
             (depth->validity != FG_ResourceValidity::ValidNow))
         {
@@ -276,34 +281,41 @@ bool Reprojection_Dx12::Present()
             else if (_reproject->IsInit())
             {
                 auto commandList = GetSCCommandList(fIndex);
-                auto previousIndex = (fIndex + BUFFER_COUNT - 1) % BUFFER_COUNT;
-
-                auto mouseDeltaSimToSim = InputCollection::getInstance().readSimsDelta(_frameCount);
 
                 ReprojectionParams params {};
 
                 FilloutData data {};
-                data.diffThreshold = 0.01f;
-                data.mouseDeltaSinceSim = mouseDeltaSinceSim;
-                data.mouseDeltaSimToSim = mouseDeltaSimToSim;
-                data.lateLatch = Config::Instance()->ReprojectionLateLatch.value_or_default();
-                data.simStartMouse = InputCollection::getInstance().readCumulativeAtSim(_frameCount);
-                data.screenWidth = (uint32_t) _interpolationWidth[fIndex];
-                data.screenHeight = (uint32_t) _interpolationHeight[fIndex];
+                FilloutReprojectionData(data, fIndex);
                 data.depthWidth = (uint32_t) depth->width;
                 data.depthHeight = (uint32_t) depth->height;
-                data.invertedDepth = _constants.flags[FG_Flags::InvertedDepth];
 
-                data.cameraVFov = _cameraVFov[fIndex];
-                data.cameraAspectRatio = _cameraAspectRatio[fIndex];
-                std::memcpy(data.cameraUp, _cameraUp[fIndex], 3 * sizeof(float));
-                std::memcpy(data.cameraRight, _cameraRight[fIndex], 3 * sizeof(float));
-                std::memcpy(data.cameraForward, _cameraForward[fIndex], 3 * sizeof(float));
-                std::memcpy(data.cameraPrevForward, _cameraForward[previousIndex], 3 * sizeof(float));
+                ID3D12Resource* velocityResource = nullptr;
+                D3D12_RESOURCE_STATES velocityState = D3D12_RESOURCE_STATE_COMMON;
+
+                if (velocity && velocity->validity != FG_ResourceValidity::ValidNow)
+                {
+                    velocityResource = velocity->GetResource();
+                    velocityState = velocity->state;
+
+                    data.hasMotionVectors = velocityResource != nullptr;
+                    data.mvWidth = (uint32_t) velocity->width;
+                    data.mvHeight = velocity->height;
+
+                    // Not every input provides the size
+                    if (velocityResource && (data.mvWidth == 0 || data.mvHeight == 0))
+                    {
+                        auto mvDesc = velocityResource->GetDesc();
+                        data.mvWidth = (uint32_t) mvDesc.Width;
+                        data.mvHeight = mvDesc.Height;
+                    }
+                }
 
                 _reproject->FilloutStruct(data, params);
                 _reproject->Dispatch((IDXGISwapChain3*) _swapChain, commandList, params, hudless->GetResource(),
-                                     hudless->state, depth->GetResource(), depth->state);
+                                     hudless->state, depth->GetResource(), depth->state, velocityResource,
+                                     velocityState);
+
+                _reprojectionActive = !_reproject->IsBypassed();
             }
         }
     }
@@ -361,7 +373,7 @@ bool Reprojection_Dx12::SetResource(Dx12Resource* inputResource)
             return false;
         }
     }
-    else if (type == FG_ResourceType::Depth)
+    else if (type == FG_ResourceType::Depth || type == FG_ResourceType::Velocity)
     {
         // Making a copy if it's just valid now to be able to use it later
         if (IsActive() && inputResource->validity == FG_ResourceValidity::ValidNow)

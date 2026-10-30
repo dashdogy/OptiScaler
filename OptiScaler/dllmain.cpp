@@ -26,9 +26,9 @@
 #include "inputs/FSR2_Vk.h"
 #include "inputs/FSR3_Dx12.h"
 #include "inputs/FG/FSR3_Dx12_FG.h"
+#include "inputs/FG/XeFG_Inputs_Dx12.h"
 
-#include <fsr4/FSR4ModelSelection.h>
-
+#include <hooks/Amdxc64_Hooks.h>
 #include <hooks/Dxgi_Hooks.h>
 #include <hooks/D3D11_Hooks.h>
 #include <hooks/D3D12_Hooks.h>
@@ -127,6 +127,25 @@ static bool IsRunningOnWine()
     return false;
 }
 
+uint32_t CheckAgilitySDK(HMODULE exe)
+{
+    auto version = reinterpret_cast<const uint32_t*>(GetProcAddress(exe, "D3D12SDKVersion"));
+    auto path = reinterpret_cast<const char* const*>(GetProcAddress(exe, "D3D12SDKPath"));
+
+    LOG_INFO(" ");
+
+    if (version && path)
+    {
+        LOG_INFO("Agility SDK Version: {}", *version);
+        LOG_INFO("Agility SDK Path: {}", *path);
+
+        return *version;
+    }
+
+    LOG_INFO("Agility SDK exports missing");
+    return 0;
+}
+
 UINT customD3D12SDKVersion = 615;
 
 static void RunAgilityUpgrade(HMODULE dx12Module)
@@ -210,6 +229,25 @@ static void RunAgilityUpgrade(HMODULE dx12Module)
     }
 }
 
+// Remembers the plugin for the menu
+static void RegisterLoadedAsi(const std::filesystem::path& path, bool hasPatchResult)
+{
+    std::string name = wstring_to_string(path.filename().wstring()); // .string() can crash
+    std::string lowerName(name);
+    std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    const bool isOptiPatcher = hasPatchResult || lowerName.find("optipatcher") != std::string::npos;
+    auto& state = State::Instance();
+    std::lock_guard<std::mutex> lock(state.loadedAsiPluginsMutex);
+    // Late-load entries can be handled more than once
+    for (const auto& plugin : state.loadedAsiPlugins)
+    {
+        if (plugin.name == name)
+            return;
+    }
+    state.loadedAsiPlugins.push_back({ name, isOptiPatcher });
+}
+
 void LoadAsiPlugins()
 {
     std::filesystem::path pluginPath(Config::Instance()->PluginPath.value_or(L"plugins"));
@@ -248,6 +286,8 @@ void LoadAsiPlugins()
 
                 auto init = (PFN_InitializeASI) KernelBaseProxy::GetProcAddress_()(hMod, "InitializeASI");
                 auto patchResult = (PFN_PatchResult) KernelBaseProxy::GetProcAddress_()(hMod, "PatchResult");
+
+                RegisterLoadedAsi(entry.path(), patchResult != nullptr);
 
                 if (init != nullptr)
                     init();
@@ -309,6 +349,8 @@ void LoadAsiPlugins()
 
                                     auto patchResult =
                                         (PFN_PatchResult) KernelBaseProxy::GetProcAddress_()(hMod, "PatchResult");
+
+                                    RegisterLoadedAsi(entry.path(), patchResult != nullptr);
 
                                     if (init != nullptr)
                                         init();
@@ -1115,6 +1157,17 @@ static void CheckWorkingMode()
         KernelHooks::Hook();
     }
 
+    auto gameAgilityVersion = CheckAgilitySDK(exeModule);
+    if (State::Instance().isWindows10 && !State::Instance().isRunningOnLinux &&
+        !Config::Instance()->FsrAgilitySDKUpgrade.has_value())
+    {
+        if (gameAgilityVersion < customD3D12SDKVersion)
+        {
+            LOG_INFO("Enabling AgilitySDKUpgrade");
+            Config::Instance()->FsrAgilitySDKUpgrade.set_volatile_value(true);
+        }
+    }
+
     // For Agility SDK Upgrade
     if (Config::Instance()->FsrAgilitySDKUpgrade.value_or_default())
     {
@@ -1140,7 +1193,7 @@ static void CheckWorkingMode()
     if (reshadeModule == nullptr && Config::Instance()->LoadReShade.value_or_default() &&
         !Config::Instance()->CreateD3D12DeviceForLuma.value_or_default())
     {
-        auto rsFile = Util::ExePath().parent_path() / L"ReShade64.dll";
+        auto rsFile = Util::ReShadePath();
         SetEnvironmentVariableW(L"RESHADE_DISABLE_LOADING_CHECK", L"1");
 
         if (skModule != nullptr)
@@ -1150,7 +1203,7 @@ static void CheckWorkingMode()
         reshadeModule = NtdllProxy::LoadLibraryExW_Ldr(rsFile.c_str(), NULL, 0);
         State::DisableServeOriginal(201);
 
-        LOG_INFO("Loading ReShade64.dll, result: {0:X}", (size_t) reshadeModule);
+        LOG_INFO("Loading {}, result: {:X}", rsFile.filename().string(), (size_t) reshadeModule);
     }
 
     // Version check
@@ -1224,6 +1277,12 @@ static void printQuirks(flag_set<GameQuirk>& quirks)
 
     if (quirks & GameQuirk::CreateSLOnThe2ndDevice)
         stringQuirks.push_back("Create SL on the 2nd device");
+
+    if (quirks & GameQuirk::XeFGCameraMotionFill)
+        stringQuirks.push_back("Fill XeFG input motion vectors with camera motion");
+
+    if (quirks & GameQuirk::DLSSGFrameLatencyWaitable)
+        stringQuirks.push_back("Request frame latency waitable swapchain for DLSSG");
 
     state->detectedQuirks.append_range(stringQuirks);
     for (auto& stringQuirk : stringQuirks)
@@ -1416,12 +1475,14 @@ void CheckMemoryForProxies()
     FfxApiProxy::InitFfxDx12_Denoiser();
     FfxApiProxy::InitFfxDx12_Radiance();
 
+    // Only the game's XeFG already in memory, the one OptiScaler loads next is hooked once the game loads it too
+    auto gameXeFG = KernelBaseProxy::GetModuleHandleW_()(L"libxess_fg.dll");
+
     XeSSProxy::InitXeSS();
     XeSSProxy::InitXeSSDx11();
     XeFGProxy::InitXeFG();
     XeLLProxy::InitXeLL();
-
-    XellHooks::Hook();
+    XeFGInputs::Hook(gameXeFG);
 
     NVNGXProxy::InitNVNGX();
 }
@@ -1437,7 +1498,7 @@ DWORD WINAPI getGpuInfo(LPVOID hModuleVoid)
     if (primaryGpu.vendorId == VendorId::AMD)
         Amdxc64Hooks::Init();
 
-    else if (Config::Instance()->Fsr4ForceModel.value_or_default() == FSR4Support::INT8)
+    else if (IsFsr4Int8(Config::Instance()->Fsr4GpuSupport.value_or_default()))
     {
         // We need spoofing hooks for FFX but want to avoid spoofing for the rest of the game
         if (!Config::Instance()->DxgiSpoofing.value_or_default())
@@ -1468,6 +1529,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 
         HMODULE handle = nullptr;
         OSVERSIONINFOW winVer { 0 };
+
+        State::Instance().startTime = std::chrono::steady_clock::now();
 
         dllModule = hModule;
         exeModule = GetModuleHandle(nullptr);
@@ -1544,6 +1607,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         else
             spdlog::warn("Can't read windows version");
 
+        State::Instance().isWindows10 = winVer.dwMajorVersion == 10 && winVer.dwBuildNumber < 22000;
+
         spdlog::info("");
 
         spdlog::info("Config parameters:");
@@ -1565,10 +1630,23 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         State::Instance().activeFgNvngx = Config::Instance()->FGNvngxReplacement.value_or_default();
 
         // Ensure valid FG configuration
+        if (State::Instance().activeFgOutput == FGOutput::NoFG && State::Instance().activeFgInput != FGInput::NoFG &&
+            State::Instance().activeFgInput != FGInput::NvngxFG &&
+            State::Instance().activeFgInput != FGInput::ForceXeLL)
+        {
+            spdlog::warn("FG Input {} without an FG Output, using none",
+                         magic_enum::enum_name(State::Instance().activeFgInput));
+            State::Instance().activeFgInput = FGInput::NoFG;
+        }
+
         if (State::Instance().activeFgInput != FGInput::NvngxFG && State::Instance().activeFgOutput != FGOutput::DLSSG)
             State::Instance().activeFgNvngx = FGNvngxReplacement::None;
 
         if (State::Instance().activeFgInput == FGInput::NvngxFG)
+            State::Instance().activeFgOutput = FGOutput::NoFG;
+
+        // XeFG input to XeFG output runs the game's own XeFG, without OptiScaler's FG pipeline
+        if (XeFGInputs::Passthrough())
             State::Instance().activeFgOutput = FGOutput::NoFG;
 
         // Init Kernel proxies
@@ -1726,38 +1804,21 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         }
 
         // FSR4 Watermark, overrides environment variable only if set in config
+        // The driver only checks whether the variable exists so disabling has to remove it
         if (Config::Instance()->Fsr4EnableWatermark.has_value())
         {
-            if (Config::Instance()->Fsr4EnableWatermark.value())
-            {
-                _wputenv_s(L"MLSR-WATERMARK", L"1");
-                SetEnvironmentVariableW(L"MLSR-WATERMARK", L"1");
+            Util::SetFlagEnvVar(L"MLSR-WATERMARK", Config::Instance()->Fsr4EnableWatermark.value());
 
-                if (!Config::Instance()->FpsOverlayPosition.has_value())
-                    Config::Instance()->FpsOverlayPosition.set_volatile_value(FpsOverlayPos_TopRight);
-            }
-            else
-            {
-                _wputenv_s(L"MLSR-WATERMARK", L"0");
-                SetEnvironmentVariableW(L"MLSR-WATERMARK", L"0");
-            }
+            if (Config::Instance()->Fsr4EnableWatermark.value() && !Config::Instance()->FpsOverlayPosition.has_value())
+                Config::Instance()->FpsOverlayPosition.set_volatile_value(FpsOverlayPos_TopRight);
         }
 
         if (Config::Instance()->FSRFGEnableWatermark.has_value())
         {
-            if (Config::Instance()->FSRFGEnableWatermark.value())
-            {
-                _wputenv_s(L"MLFI-WATERMARK", L"1");
-                SetEnvironmentVariableW(L"MLFI-WATERMARK", L"1");
+            Util::SetFlagEnvVar(L"MLFI-WATERMARK", Config::Instance()->FSRFGEnableWatermark.value());
 
-                if (!Config::Instance()->FpsOverlayPosition.has_value())
-                    Config::Instance()->FpsOverlayPosition.set_volatile_value(FpsOverlayPos_TopRight);
-            }
-            else
-            {
-                _wputenv_s(L"MLFI-WATERMARK", L"0");
-                SetEnvironmentVariableW(L"MLFI-WATERMARK", L"0");
-            }
+            if (Config::Instance()->FSRFGEnableWatermark.value() && !Config::Instance()->FpsOverlayPosition.has_value())
+                Config::Instance()->FpsOverlayPosition.set_volatile_value(FpsOverlayPos_TopRight);
         }
 
         // Asi plugins

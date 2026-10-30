@@ -7,16 +7,7 @@ struct AmdExtD3DFactory;
 struct AmdExtD3DShaderIntrinsics;
 struct AmdExtD3DDevice8;
 
-struct magicData
-{
-    uint32_t values[4];
-    magicData* nextMagicData;
-};
-
 typedef HRESULT(__cdecl* PFN_AmdExtD3DCreateInterface)(IUnknown* pOuter, REFIID riid, void** ppvObject);
-typedef HRESULT(STDMETHODCALLTYPE* PFN_UpdateFfxApiProvider)(void* pData, uint32_t dataSizeInBytes);
-typedef HRESULT(STDMETHODCALLTYPE* PFN_UpdateFfxApiProviderEx)(void* pData, uint32_t dataSizeInBytes,
-                                                               magicData* magicData);
 
 // Based on the PDBs provided with FFX 2.1.0
 enum AmdExtWaveMatrixPropertiesType : int32_t
@@ -128,6 +119,40 @@ IAmdExtFfxApi : public IUnknown
     virtual HRESULT UpdateFfxApiProvider(void* pData, uint32_t dataSizeInBytes) = 0;
 };
 
+struct AmdExtFlipMeterCaps
+{
+    uint32_t supportedModesMask; // bit (mode - 1)
+    uint32_t supported;
+    uint32_t unknown;
+    uint32_t status;
+};
+
+struct AmdExtFlipMeterConfig
+{
+    uint32_t mode; // 0 = off, FSR requests 2
+    uint32_t reserved;
+    uint32_t valid;
+    uint32_t flags;
+    uint32_t unknown10;
+    uint32_t status;
+    uint8_t unknown18[0x28];
+};
+static_assert(sizeof(AmdExtFlipMeterConfig) == 0x40);
+
+MIDL_INTERFACE("543820DD-06C9-4F7E-A3D0-CA260D794ADD")
+IAmdExtFlipMeter : public IUnknown
+{
+  public:
+    virtual HRESULT GetCaps(uint32_t index, AmdExtFlipMeterCaps* caps, uint32_t capsSize) = 0;
+    virtual HRESULT SetConfig(AmdExtFlipMeterConfig * config) = 0;
+    virtual HRESULT GetConfig(AmdExtFlipMeterConfig * config) = 0;
+};
+
+typedef HRESULT(STDMETHODCALLTYPE* PFN_AmdExtD3DFactory_CreateInterface)(IAmdExtD3DFactory* This, IUnknown* pOuter,
+                                                                         REFIID riid, void** ppvObject);
+typedef HRESULT(STDMETHODCALLTYPE* PFN_AmdExtFlipMeter_Config)(IAmdExtFlipMeter* This, AmdExtFlipMeterConfig* config);
+typedef ULONG(STDMETHODCALLTYPE* PFN_AmdExtFlipMeter_Release)(IAmdExtFlipMeter* This);
+
 class Amdxc64Hooks
 {
   public:
@@ -136,15 +161,36 @@ class Amdxc64Hooks
     inline static AmdExtD3DDevice8* amdExtD3DDevice8 = nullptr;
     inline static AmdExtD3DShaderIntrinsics* amdExtD3DShaderIntrinsics = nullptr;
     inline static AmdExtD3DShaderIntrinsics* o_amdExtD3DShaderIntrinsics = nullptr;
-    inline static AmdExtD3DFactory* amdExtD3DFactory = nullptr;
-    inline static AmdExtD3DFactory* o_amdExtD3DFactory = nullptr;
     inline static AmdExtFfxApi* amdExtFfxApi = nullptr;
     inline static AmdExtAntiLagApi* amdExtAntiLagApi = nullptr;
 
     inline static PFN_AmdExtD3DCreateInterface o_AmdExtD3DCreateInterface = nullptr;
+    inline static PFN_AmdExtD3DFactory_CreateInterface o_FactoryCreateInterface = nullptr;
+    inline static PFN_AmdExtFlipMeter_Config o_FlipMeterSetConfig = nullptr;
+    inline static PFN_AmdExtFlipMeter_Config o_FlipMeterGetConfig = nullptr;
+    inline static PFN_AmdExtFlipMeter_Release o_FlipMeterRelease = nullptr;
 
     inline static bool giveGameAl2Proxy = true;
 
     static void Init();
     static HRESULT hkAmdExtD3DCreateInterface(IUnknown* pOuter, REFIID riid, void** ppvObject);
+
+    // Re-sends the last config FSR requested, with DisableFlipMetering applied
+    static void ApplyFlipMeterOverride();
+
+  private:
+    // Recursive in case the driver releases the interface from within its own calls
+    inline static std::recursive_mutex flipMeterMutex;
+    // Not ref counted to not keep the swapchain alive, cleared on its final Release
+    inline static IAmdExtFlipMeter* flipMeter = nullptr;
+    inline static std::optional<AmdExtFlipMeterConfig> flipMeterRequested {};
+
+    static HRESULT SetFlipMeterConfig(IAmdExtFlipMeter* flipMeter, const AmdExtFlipMeterConfig& requested);
+    static ULONG STDMETHODCALLTYPE hkFlipMeterRelease(IAmdExtFlipMeter* This);
+    static void HookFactory(IAmdExtD3DFactory* factory);
+    static void HookFlipMeter(IAmdExtFlipMeter* flipMeter);
+    static HRESULT STDMETHODCALLTYPE hkFactoryCreateInterface(IAmdExtD3DFactory* This, IUnknown* pOuter, REFIID riid,
+                                                              void** ppvObject);
+    static HRESULT STDMETHODCALLTYPE hkFlipMeterSetConfig(IAmdExtFlipMeter* This, AmdExtFlipMeterConfig* config);
+    static HRESULT STDMETHODCALLTYPE hkFlipMeterGetConfig(IAmdExtFlipMeter* This, AmdExtFlipMeterConfig* config);
 };
