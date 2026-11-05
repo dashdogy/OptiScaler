@@ -1454,8 +1454,10 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
 
     // The game's FSR FG present callback draws its UI on every present, also while frame generation is off
     // (menus, pause): AMD's swapchain calls it on that path too. Present() submits the UI command list.
+    // Only while FG is off, running FG without the mutex above would race with EvaluateState.
     const bool fsrFgUi = (state.activeFgInput == FGInput::FSRFG || state.activeFgInput == FGInput::FSRFG30) &&
-                         state.swapchainInteropApi == SwapchainInteropApi::None;
+                         state.swapchainInteropApi == SwapchainInteropApi::None && fg != nullptr &&
+                         (!fg->IsActive() || fg->IsPaused());
 
     if (willPresent && fg != nullptr && (fgFeatureActive || fsrFgUi))
     {
