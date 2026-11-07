@@ -1,6 +1,7 @@
 #pragma once
 
 #include <framegen/IFGFeature.h>
+#include <framegen/xefg/XeFG_DynamicMFG.h>
 
 #include <proxies/Streamline_Proxy.h>
 
@@ -14,11 +15,15 @@ class DLSSG_Common : public virtual IFGFeature
     // Streamline's own max, over _maxInterpolationCount when an nvngx provider generates fewer frames
     int _streamlineMaxInterpolationCount = 1;
 
+    // Dynamic MFG ([DLSSG] DynamicMFG): numFramesToGenerate follows the target, up to the Frame Gen setting
+    XeFG_DynamicMFG _dynamic;
+
     // Max interpolation count and DMFG support, once the swapchain exists
     void QueryState();
 
-    // DLSSG and Reflex options for the next present, Reflex optimizes with the game's markers when it has them
-    void SetOptions(bool gameMarkersReachStreamline);
+    // DLSSG and Reflex options for the next present, Reflex optimizes with the game's markers when it has them.
+    // window: the swapchain's, for Dynamic MFG's refresh rate and focus
+    void SetOptions(bool gameMarkersReachStreamline, HWND window);
 
     // Fills _frameToken and sends the frame's constants, pauses FG when Streamline refuses them
     bool SetConstants(int fIndex, uint32_t frameId, uint32_t mvWidth, uint32_t mvHeight);

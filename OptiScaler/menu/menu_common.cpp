@@ -5831,32 +5831,100 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
             }
         }
 
+        const int dlssgMaxCount = dlssg->GetMaxInterpolationCount();
+
+        // OptiScaler's Dynamic MFG picks from 2X up (no 1X), Streamline's own (Force Dynamic MFG) replaces it
+        const bool forceDMFG = config->FGDLSSGForceDMFG.value_or_default();
+        const bool dynamicMFG = dlssgMaxCount > 1 && !forceDMFG && config->FGDLSSGDynamicMFG.value_or_default();
+
         ImGui::Text("Current DLSSG state:");
         ImGui::SameLine();
         if (auto count = state.dlssgDetectedInterpolationCount; count > 0)
         {
             ImGui::TextColored(toneMapColor(ImVec4(0.f, 1.f, 0.25f, 1.f)), std::format("ON {}x", count + 1).c_str());
+
+            if (dynamicMFG)
+            {
+                ImGui::SameLine();
+                ImGui::TextDisabled("(Dynamic)");
+            }
         }
         else
         {
             ImGui::TextColored(StatusError(), "OFF");
         }
 
-        RenderFGModeSlider(ctx, "Frame Gen##dlssg", dlssg->GetMaxInterpolationCount(),
-                           &config->FGDLSSGInterpolationCount);
+        // Dynamic MFG: the Frame Gen setting is the most, the multiplier follows the game's frame rate
+        if (dynamicMFG)
+            RenderFGModeSlider(ctx, "Max Frame Gen###dlssgMode", dlssgMaxCount, &config->FGDLSSGInterpolationCount,
+                               "The highest multiplier Dynamic MFG may use");
+        else
+            RenderFGModeSlider(ctx, "Frame Gen###dlssgMode", dlssgMaxCount, &config->FGDLSSGInterpolationCount);
 
-        if (dlssg->GetMaxInterpolationCount() > 1)
+        if (dlssgMaxCount > 1)
+        {
+            ImGui::SameLine(0.0f, 16.0f);
+            ImGui::BeginDisabled(forceDMFG);
+
+            if (bool dynamic = dynamicMFG; ImGui::Checkbox("Dynamic MFG##dlssg", &dynamic))
+                config->FGDLSSGDynamicMFG = dynamic;
+
+            ImGui::EndDisabled();
+
+            ShowTooltip("Changes the multiplier on the fly to hit the target FPS,\n"
+                        "from 2X up to the Frame Gen setting.");
+        }
+
+        if (dynamicMFG)
+        {
+            // Applied on release, dragging doesn't restart Dynamic MFG every frame.
+            // The slider's lowest step (9) is Auto, the lowest target is 10.
+            constexpr float autoStep = 9.0f;
+            static float dlssgFpsTarget = std::max(config->FGDLSSGFramerateTargetDMFG.value_or_default(), autoStep);
+            const float fpsSliderMax = (float) std::max(200, refreshRate);
+
+            ImGui::SetNextItemWidth(150.0f * menuResScale);
+            ImGui::SliderFloat("Target FPS##dlssg", &dlssgFpsTarget, autoStep, fpsSliderMax,
+                               dlssgFpsTarget < autoStep + 0.5f ? "Auto" : "%.0f", ImGuiSliderFlags_AlwaysClamp);
+
+            if (ImGui::IsItemDeactivatedAfterEdit())
+            {
+                if (dlssgFpsTarget < autoStep + 0.5f)
+                    config->FGDLSSGFramerateTargetDMFG.reset();
+                else
+                    config->FGDLSSGFramerateTargetDMFG = dlssgFpsTarget;
+            }
+
+            ShowTooltip("Presented FPS to aim for, never above the FPS limit.\n"
+                        "Auto: the FPS limit, or just under the refresh rate.");
+
+            const char* roundings[] = { "At most target", "Around target", "At least target" };
+            int rounding = std::clamp(config->FGDLSSGRoundingDMFG.value_or_default(), 0, 2);
+
+            ImGui::SameLine(0.0f, 16.0f);
+            ImGui::SetNextItemWidth(150.0f * menuResScale);
+            if (ImGui::Combo("##dlssgRounding", &rounding, roundings, IM_ARRAYSIZE(roundings)))
+                config->FGDLSSGRoundingDMFG = rounding;
+
+            ShowTooltip("Where FPS may land, as multipliers only come in steps:\n"
+                        "at most, around or at least the target FPS.");
+        }
+
+        if (dlssgMaxCount > 1)
         {
             if (dlssg->GetDMFGSupport())
             {
-                ImGui::SameLine(0.0f, 16.0f);
+                // Streamline's own Dynamic mode: OptiScaler's steps aside while it is on, and it stays off while
+                // OptiScaler's is ticked
+                ImGui::BeginDisabled(config->FGDLSSGDynamicMFG.value_or_default() && !forceDMFG);
 
-                if (bool dynamicMFG = config->FGDLSSGForceDMFG.value_or_default();
-                    ImGui::Checkbox("Force Dynamic MFG", &dynamicMFG))
+                if (bool force = forceDMFG; ImGui::Checkbox("Force Dynamic MFG", &force))
                 {
-                    config->FGDLSSGForceDMFG = dynamicMFG;
+                    config->FGDLSSGForceDMFG = force;
                     state.fgChanged = true;
                 }
+
+                ImGui::EndDisabled();
 
                 ImGui::BeginDisabled(!config->FGDLSSGForceDMFG.value_or_default());
                 static float fpsTarget = config->FGDLSSGFramerateTargetDMFG.value_or_default();

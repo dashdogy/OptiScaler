@@ -986,6 +986,9 @@ static VkResult hkvkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPres
             fg->Present();
     }
 
+    // The FG output's present with the FPS limiter's sleep, a wait Dynamic MFG reads like the DXGI one's
+    const double presentStart = Util::MillisecondsNow();
+
     // original call
     ScopedVulkanCreatingSC scopedVulkanCreatingSC {};
     VkResult result;
@@ -1012,6 +1015,9 @@ static VkResult hkvkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPres
     // The DX12 FG swapchain's present limits interop presents
     if (!interopPresent && !State::Instance().reflexLimitsFps && !InputCommon::can_limit_fps())
         FrameLimit::sleep(fgPresent && fg->IsActive() && !fg->IsPaused());
+
+    if (fgPresent)
+        State::Instance().lastFGPresentMs = Util::MillisecondsNow() - presentStart;
 
     // A changed present mode override needs a new swapchain. Out of date from acquire crashes Enshrouded,
     // suboptimal after the present doesn't

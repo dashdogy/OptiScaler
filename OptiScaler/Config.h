@@ -750,6 +750,8 @@ class Config
     CustomOptional<bool> FGDLSSGOverrideForceDMFG { false };   // Overrides game's DLSSG mode to Dynamic
     CustomOptional<bool> FGDLSSGForceDMFG { false };           // Overrides Opti's DLSSG mode to Dynamic
     CustomOptional<float> FGDLSSGFramerateTargetDMFG { 0.0f }; // 0.0 means auto-detects the display refresh rate
+    CustomOptional<bool> FGDLSSGDynamicMFG { false }; // OptiScaler's Dynamic MFG, up to FGDLSSGInterpolationCount
+    CustomOptional<int> FGDLSSGRoundingDMFG { 1 };    // 0 at most, 1 around, 2 at least the target
 
     // Reprojection
     CustomOptional<ReprojectionFill> ReprojectionFillMode { ReprojectionFill::Dithering };
