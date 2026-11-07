@@ -35,6 +35,9 @@ void DLSSG_Common::Activate()
 
         UpdateTarget();
         _isActive = true;
+
+        // FG back on: Dynamic MFG starts its averages over but keeps what it learned
+        _dynamic.Restart();
     }
 }
 
@@ -86,7 +89,7 @@ void DLSSG_Common::QueryState()
     }
 }
 
-void DLSSG_Common::SetOptions(bool gameMarkersReachStreamline)
+void DLSSG_Common::SetOptions(bool gameMarkersReachStreamline, HWND window)
 {
     auto config = Config::Instance();
 
@@ -97,9 +100,15 @@ void DLSSG_Common::SetOptions(bool gameMarkersReachStreamline)
                  _maxInterpolationCount);
     }
 
-    const int targetCount =
-        std::clamp(config->FGInterpolationCount(config->FGDLSSGInterpolationCount.value_or_default()), 1,
-                   std::max(_maxInterpolationCount, 1));
+    int targetCount = std::clamp(config->FGInterpolationCount(config->FGDLSSGInterpolationCount.value_or_default()),
+                                 1, std::max(_maxInterpolationCount, 1));
+
+    // Dynamic MFG, up to the Frame Gen setting. The game's wait in the present path is its last present to
+    // Streamline's swapchain with OptiScaler's Reflex sleep and FPS limiter. Streamline hands the count to the
+    // provider (NVIDIA's or an Nvngx replacement) with each frame's evaluations (DLSSG.MultiFrameCount).
+    const auto dynamic = _dynamic.Update(XeFG_DynamicMFG::DLSSGSettings(), targetCount, _framesToInterpolate, false,
+                                         State::Instance().lastFGPresentMs, window);
+    targetCount = dynamic.count;
 
     if (_framesToInterpolate != targetCount)
     {

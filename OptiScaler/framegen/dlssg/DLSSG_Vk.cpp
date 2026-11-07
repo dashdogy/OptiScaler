@@ -335,6 +335,7 @@ bool DLSSG_Vk::CreateSwapchain(VkDevice device, const VkSwapchainCreateInfoKHR* 
     _swapchain = *pSwapchain;
     _swapchainFormat = pCreateInfo->imageFormat;
     _swapchainExtent = pCreateInfo->imageExtent;
+    _window = VulkanHooks::SurfaceWindow(pCreateInfo->surface);
 
     return true;
 }
@@ -457,7 +458,7 @@ bool DLSSG_Vk::Dispatch()
         return false;
     }
 
-    SetOptions(false);
+    SetOptions(false, _window);
 
     if (!SetConstants(fIndex, (uint32_t) willDispatchFrame, velocity->width, velocity->height))
         return false;

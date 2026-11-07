@@ -5,21 +5,53 @@
 #include <State.h>
 #include <low_latency/input/input_common.h>
 
-XeFG_DynamicMFG::Result XeFG_DynamicMFG::Update(int targetCount, int framesToInterpolate, bool generationOff,
-                                                double presentWaitMs, HWND window)
+XeFG_DynamicMFG::Settings XeFG_DynamicMFG::XeFGSettings()
+{
+    auto config = Config::Instance();
+
+    Settings settings;
+    settings.enabled = config->FGXeFGDynamicMFG.value_or_default();
+    settings.targetFps = config->FGXeFGFramerateTargetDMFG.value_or_default();
+    settings.rounding = config->FGXeFGRoundingDMFG.value_or_default();
+    settings.supports1X = true;
+    settings.allow1X = config->FGXeFGDynamicAllow1X.value_or_default();
+    settings.targetAsCap = config->FGXeFGTargetAsCapDMFG.value_or_default();
+    return settings;
+}
+
+XeFG_DynamicMFG::Settings XeFG_DynamicMFG::DLSSGSettings()
+{
+    auto config = Config::Instance();
+
+    // Streamline's own Dynamic mode (Force Dynamic MFG) picks the count itself
+    Settings settings;
+    settings.enabled = config->FGDLSSGDynamicMFG.value_or_default() && !config->FGDLSSGForceDMFG.value_or_default();
+    // The target is shared with Force Dynamic MFG, whose slider goes down to 0: under the Dynamic MFG slider's
+    // lowest target (its Auto step ends at 9.5) it is Auto
+    const float target = config->FGDLSSGFramerateTargetDMFG.value_or_default();
+    settings.targetFps = target >= 9.5f ? target : 0.0f;
+    settings.rounding = config->FGDLSSGRoundingDMFG.value_or_default();
+    return settings;
+}
+
+XeFG_DynamicMFG::Result XeFG_DynamicMFG::Update(const Settings& settings, int targetCount, int framesToInterpolate,
+                                                bool generationOff, double presentWaitMs, HWND window)
 {
     auto config = Config::Instance();
     auto& state = State::Instance();
 
+    // Without 1X the lowest count is 1, at 1 there is nothing to choose
+    const int lowestCount = settings.supports1X ? 0 : 1;
+
     Result result;
-    result.dynamic = config->FGXeFGDynamicMFG.value_or_default() && !config->FGFollowsGame();
+    result.dynamic = settings.enabled && !config->FGFollowsGame() && targetCount > lowestCount;
     result.ownChange = result.dynamic && _active;
     result.count = targetCount;
 
     if (result.dynamic)
     {
         const auto now = Util::MillisecondsNow();
-        const auto target = TargetFps(now, window);
+        const auto target = TargetFps(now, window, settings.targetFps);
         const int count1 = framesToInterpolate >= 1 ? std::min(framesToInterpolate, targetCount) : targetCount;
         const int current = generationOff ? 0 : count1;
         const auto refresh = DisplayRefreshFps(now, window);
@@ -51,12 +83,12 @@ XeFG_DynamicMFG::Result XeFG_DynamicMFG::Update(int targetCount, int framesToInt
             _capActive = false;
         }
         const double waitMs = sleepMs + presentWaitMs;
-        const int rounding = std::clamp(config->FGXeFGRoundingDMFG.value_or_default(), 0, 2);
-        const int minCount = config->FGXeFGDynamicAllow1X.value_or_default() || targetCount == 1 ? 0 : 1;
+        const int rounding = std::clamp(settings.rounding, 0, 2);
+        const int minCount = settings.supports1X && (settings.allow1X || targetCount == 1) ? 0 : 1;
 
         // Use target as cap: every OptiScaler limiter holds the presented frame rate at the target
         // (FrameLimit::targetFps), the target is at most the FPS limit. Without 1X the cap needs 3X to choose from.
-        const bool cap = config->FGXeFGTargetAsCapDMFG.value_or_default() && target > 0.0f && targetCount > 1;
+        const bool cap = settings.targetAsCap && target > 0.0f && targetCount > 1;
         state.xefgDynamicCapFps = cap ? target : 0.0f;
 
         int count = current;
@@ -181,13 +213,13 @@ float XeFG_DynamicMFG::DisplayRefreshFps(double nowMs, HWND window)
     return (float) std::max(_refreshRate, 0);
 }
 
-float XeFG_DynamicMFG::TargetFps(double nowMs, HWND window)
+float XeFG_DynamicMFG::TargetFps(double nowMs, HWND window, float setTargetFps)
 {
     // OptiScaler's FPS limit counts the presented frames, a target above it can't be reached
     const auto limit = Config::Instance()->FramerateLimit.value_or_default();
 
-    if (auto target = Config::Instance()->FGXeFGFramerateTargetDMFG.value_or_default(); target > 0.0f)
-        return limit > 0.0f ? std::min(target, limit) : target;
+    if (setTargetFps > 0.0f)
+        return limit > 0.0f ? std::min(setTargetFps, limit) : setTargetFps;
 
     if (limit > 0.0f)
         return limit;
