@@ -42,6 +42,11 @@
 //    target, the refresh rate or the FPS limit) while the game didn't wait in OptiScaler: then it waits for V-Sync
 //    or a limiter elsewhere and its headroom can't be seen. A GPU bound game's waits also hold the CPU while the GPU
 //    works, so they promise more than the GPU gives; only the wait between tries limits those.
+//  - Where a low latency sleep always runs (Sample::waitsAreHeadroom false: the DLSSG output, Streamline keeps Reflex
+//    on) a GPU bound game sleeps away what the GPU takes, and one step less gives back the cost of one generated frame,
+//    not the sleep. There one step less is expected from the whole real frame time minus that cost, and the cost is
+//    learned from the whole real frame time. Until the cost is known a step down is tried, also at a cap the waits
+//    can't show the headroom of; once it is known only one expected at the bar itself is taken.
 //  - Tries wait 3 s. Each step down keeps its own wait and the presented rate it failed at: after a failure the wait
 //    doubles (quadruples after falling more than 15% short or failing early, up to 60 s), and the step stays
 //    blocked while the game is no lighter (presents at most 8% more at that count). A step that holds at a lighter
@@ -74,6 +79,9 @@ class XeFG_DynamicCount
         int currentCount = 1;    // interpolated frames in use
         int rounding = 1;        // Rounding: 0 down, 1 nearest, 2 up
         int minCount = 1;        // fewest interpolated frames: 0 allows 1X (frame generation off)
+        // The waits are time one step less could use. False where a low latency sleep always runs (the DLSSG output):
+        // a GPU bound game's waits there don't shorten the frame.
+        bool waitsAreHeadroom = true;
     };
 
     enum class Rounding
@@ -151,7 +159,8 @@ class XeFG_DynamicCount
         // Presented at one step less: from 2X to 1X frame generation stops altogether, which saves more than a frame
         const bool toOff = count == 1;
         const double saved = toOff && _offSamples > 0 ? _offMs : _genMs;
-        const double lower = count * 1000.0 / std::max(_workMs - saved, 0.5);
+        // Only waits that are headroom shorten the frame
+        const double lower = count * 1000.0 / std::max((s.waitsAreHeadroom ? _workMs : _frameMs) - saved, 0.5);
         const double waitShare = 1.0 - _workMs / _frameMs;
         const double sinceChange = nowMs - _lastChangeMs;
         const auto atCap = [presented](double cap)
@@ -282,7 +291,7 @@ class XeFG_DynamicCount
 
                 if (enough && count < maxCount && (mean < fail || (end && mean < pass)))
                 {
-                    Learn(count, mean);
+                    Learn(count, mean, s.waitsAreHeadroom);
                     // Far short, or short so clearly that it ended early: wait four times as long
                     FailedDown(count + 1, nowMs, mean < pass * 0.85 || !end, _checkBefore);
                     return Change(count + 1, nowMs, Reason::Undo, Check::None, presented);
@@ -291,7 +300,7 @@ class XeFG_DynamicCount
                 if (!end)
                     return count;
 
-                Learn(count, mean);
+                Learn(count, mean, s.waitsAreHeadroom);
                 DownHeld(count);
 
                 if (unreached)
@@ -316,7 +325,7 @@ class XeFG_DynamicCount
                     }
                 }
 
-                Learn(count, mean);
+                Learn(count, mean, s.waitsAreHeadroom);
                 UpHeld(count, mean, nowMs);
             }
 
@@ -379,7 +388,8 @@ class XeFG_DynamicCount
         // step less can raise the real frame rate by more than it shows), when the presented rate is held at a cap
         // the waits don't explain, or while the target can't be reached.
         const bool costKnown = (toOff ? _offSamples : _genSamples) > 0;
-        const double tryShare = costKnown ? kTryShareLearned : kTryShare;
+        // With waits that aren't headroom the expectation is the whole frame less the learned cost: no margin under it
+        const double tryShare = !costKnown ? kTryShare : s.waitsAreHeadroom ? kTryShareLearned : 1.0;
         const bool unreached = presented < s.targetFps * kReached;
 
         // While the target can't be reached, once the cost is learned and no cap hides the headroom, only a step
@@ -391,7 +401,9 @@ class XeFG_DynamicCount
         // Held at a cap the game's waits don't show (its own XeLL or AntiLag 2 sleep, a driver cap): try a step less
         // now and then, as the cap controller does
         const bool heldAtCap = atCap(target) || atCap(s.limitFps) || atCap(s.refreshFps);
-        const bool capProbe = canDown && heldAtCap && waitShare < kUnseenWaitShare && sinceChange >= kCapProbeMs;
+        // Waits that aren't headroom can't show what a cap hides either: until the cost of a frame is known, try
+        const bool capProbe = canDown && heldAtCap && sinceChange >= kCapProbeMs &&
+                              (waitShare < kUnseenWaitShare || (!s.waitsAreHeadroom && !costKnown));
 
         if (Held(_tryHold, (tryDown || capProbe) && !knownBad, nowMs) >= std::min(down.backoffMs, kTryHoldMs) &&
             sinceChange >= down.backoffMs)
@@ -665,22 +677,23 @@ class XeFG_DynamicCount
 
     // The cost of one interpolated frame: how the frame time without the waits moved with the count. Only when the
     // presented rate moved with the count too, or the waits were seen on both sides; under an unseen cap the frame
-    // time follows the cap instead.
-    void Learn(int count, double mean)
+    // time follows the cap instead. Where the waits aren't headroom, from the whole real frame time.
+    void Learn(int count, double mean, bool waitsAreHeadroom)
     {
         if (_checkCount < kCheckMinFrames || count == _checkBeforeCount || _checkBefore <= 0.0)
             return;
 
-        const double after = _checkWorkSumMs / _checkCount;
+        const double after = (waitsAreHeadroom ? _checkWorkSumMs : _checkSumMs) / _checkCount;
+        const double before = waitsAreHeadroom ? _checkBeforeWorkMs : _checkBeforeFrameMs;
         const double afterWaitShare = 1.0 - _checkWorkSumMs / _checkSumMs;
         const double expected = (count + 1.0) / (_checkBeforeCount + 1.0) - 1.0;
         const bool moved = std::abs(mean / _checkBefore - 1.0) >= std::abs(expected) * 0.25;
-        const bool seen = _checkBeforeWaitShare >= 0.1 && afterWaitShare >= 0.1;
+        const bool seen = waitsAreHeadroom && _checkBeforeWaitShare >= 0.1 && afterWaitShare >= 0.1;
 
         if (!moved && !seen)
             return;
 
-        const double perFrame = (after - _checkBeforeWorkMs) / (count - _checkBeforeCount);
+        const double perFrame = (after - before) / (count - _checkBeforeCount);
 
         // Noise or a load change (frame generation itself, 1X <-> 2X, can cost as much as the frame)
         const bool onOff = std::min(count, _checkBeforeCount) == 0;
