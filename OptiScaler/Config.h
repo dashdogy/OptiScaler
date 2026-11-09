@@ -651,6 +651,7 @@ class Config
     CustomOptional<bool> FGVelocityValidNow { false };
     CustomOptional<bool> FGHudlessValidNow { false };
     CustomOptional<bool> FGOnlyAcceptFirstHudless { false };
+    CustomOptional<bool> FGStreamlineLastTagWins { true };
     CustomOptional<bool, SoftDefault> FGPreserveSwapChain { true };
     CustomOptional<bool, SoftDefault> FGSkipResizeBuffers { false };
     CustomOptional<bool> FGModifyBufferState { false };

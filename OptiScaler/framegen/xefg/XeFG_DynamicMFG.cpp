@@ -79,7 +79,7 @@ XeFG_DynamicMFG::Result XeFG_DynamicMFG::Update(const Settings& settings, int ta
             LOG_INFO("Dynamic MFG: the game's window is back in front, starting over at {}X", current + 1);
             _unfocused = false;
             _count.Reset();
-            _cap.Reset();
+            _cap.Restart();
             _capActive = false;
         }
         const double waitMs = sleepMs + presentWaitMs;
@@ -175,7 +175,7 @@ XeFG_DynamicMFG::Result XeFG_DynamicMFG::Update(const Settings& settings, int ta
 void XeFG_DynamicMFG::Restart()
 {
     _count.Restart();
-    _cap.Reset();
+    _cap.Restart();
 }
 
 int XeFG_DynamicMFG::Focused(HWND window)

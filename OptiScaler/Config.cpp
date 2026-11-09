@@ -154,6 +154,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             FGVelocityValidNow.set_from_config(readBool("FrameGen", "VelocityValidNow"));
             FGHudlessValidNow.set_from_config(readBool("FrameGen", "HudlessValidNow"));
             FGOnlyAcceptFirstHudless.set_from_config(readBool("FrameGen", "OnlyAcceptFirstHudless"));
+            FGStreamlineLastTagWins.set_from_config(readBool("FrameGen", "StreamlineLastTagWins"));
             FGPreserveSwapChain.set_from_config(readBool("FrameGen", "PreserveSwapChain"));
             FGSkipResizeBuffers.set_from_config(readBool("FrameGen", "SkipResizeBuffers"));
             FGModifyBufferState.set_from_config(readBool("FrameGen", "ModifyBufferState"));
@@ -1427,6 +1428,8 @@ bool Config::SaveIni()
         ini.SetValue("FrameGen", "RectHeight", GetIntValue(Instance()->FGRectHeight.value_for_config()).c_str());
         ini.SetValue("FrameGen", "AllowedFrameAhead",
                      GetIntValue(Instance()->FGAllowedFrameAhead.value_for_config()).c_str());
+        ini.SetValue("FrameGen", "StreamlineLastTagWins",
+                     GetBoolValue(Instance()->FGStreamlineLastTagWins.value_for_config()).c_str());
         ini.SetValue("FrameGen", "DepthValidNow", GetBoolValue(Instance()->FGDepthValidNow.value_for_config()).c_str());
         ini.SetValue("FrameGen", "VelocityValidNow",
                      GetBoolValue(Instance()->FGVelocityValidNow.value_for_config()).c_str());
