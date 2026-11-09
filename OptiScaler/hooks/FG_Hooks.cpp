@@ -1534,6 +1534,19 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         }
     }
 
+    // OptiScaler's DLSSG with the XeLL output: what XeFG tells XeLL around the game's present
+    ID3D12CommandQueue* dlssgQueue = nullptr;
+    const bool dlssgActive = fgFeatureActive && state.activeFgOutput == FGOutput::DLSSG;
+    const uint32_t dlssgFrames = dlssgActive ? fg->GetInterpolatedFrameCount() : 0;
+
+    if (auto fgDx12 = state.currentFG; willPresent && fgDx12 != nullptr && state.activeFgOutput == FGOutput::DLSSG)
+    {
+        dlssgQueue = fgDx12->GetCommandQueue();
+
+        if (dlssgQueue != nullptr)
+            InputCommon::dlssg_game_present(dlssgQueue, dlssgActive, dlssgFrames, false);
+    }
+
     HRESULT result;
     const auto presentStart = Util::MillisecondsNow();
     if (pPresentParameters == nullptr)
@@ -1543,6 +1556,9 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
 
     if (gameQueue != nullptr)
         InputCommon::fg_game_present(gameQueue, true, frameMultiplier);
+
+    if (dlssgQueue != nullptr)
+        InputCommon::dlssg_game_present(dlssgQueue, dlssgActive, dlssgFrames, true);
 
     // How many frames XeFG sends to its presenter for the batch it marked in this present
     if (xefgContext != nullptr && XeFGProxy::GetLastPresentStatus() != nullptr)

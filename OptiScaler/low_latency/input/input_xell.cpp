@@ -543,6 +543,23 @@ xell_result_t InputXeLL::SetDisplayInfo(xell_input_handle_t context, void* displ
 
     return CallReal(XeLLProxy::RealSetDisplayInfo(), context->real, (void*) paced);
 }
+xell_result_t InputXeLL::SetVsyncOffDisplayInfo(xell_input_handle_t context)
+{
+    if (!context || !context->real)
+        return XELL_RESULT_ERROR_INVALID_CONTEXT;
+
+    // The argument's layout is libxell 1.3's
+    auto version = XeLLProxy::Version();
+
+    if (version.major != 1 || version.minor < 3)
+        return XELL_RESULT_ERROR_NOT_IMPLEMENTED;
+
+    XeLLDisplayInfo info {};
+    info.version = 1;
+    info.fixedTearing = 1;
+
+    return CallReal(XeLLProxy::RealSetDisplayInfo(), context->real, (void*) &info);
+}
 xell_result_t InputXeLL::SetFgEnabled(xell_input_handle_t context, uint32_t enabled, uint32_t frameId)
 {
     if (!context)

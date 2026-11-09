@@ -100,6 +100,9 @@ class InputCommon
 
     static bool xefg_paced();
 
+    // XeLL output with OptiScaler's DLSSG output: XeLL is told about the frame generation (dlssg_game_present)
+    static bool xell_follows_dlssg();
+
     inline static flag_set<LowLatencyInput> avaliableInputs {};
     inline static LowLatencyInput activeInput = LowLatencyInput::None;
     inline static LowLatencyMode activeOutput = LowLatencyMode::None;
@@ -176,6 +179,10 @@ class InputCommon
     // The game's DLSSG presents through the wrapped swapchain, AntiLag 2 gets the frame type of each present there
     static bool dlssg_types_presents();
     static void dlssg_present();
+
+    // OptiScaler's DLSSG output has no XeFG to feed the XeLL output, around the game's present it does the same
+    static void dlssg_game_present(ID3D12CommandQueue* gameQueue, bool fgActive, uint32_t generatedFrames,
+                                   bool presented);
 
     // The Reflex output reports that frame multiplier to the driver (Reflex Sync), which then applies the FPS limit
     // to the output frames itself

@@ -292,6 +292,11 @@ bool InputCommon::xefg_paced()
     return activeOutput == LowLatencyMode::XeLL && State::Instance().activeFgOutput == FGOutput::XeFG;
 }
 
+bool InputCommon::xell_follows_dlssg()
+{
+    return activeOutput == LowLatencyMode::XeLL && State::Instance().activeFgOutput == FGOutput::DLSSG;
+}
+
 LowLatencyInput InputCommon::default_input()
 {
     // With the XeFG input the game's own low latency for its frame generation is XeLL, Reflex markers it also sends
@@ -718,6 +723,11 @@ InputResult InputCommon::set_async_marker(const InputContext& inputContext, ID3D
     // for the XeLL output).
     if (fgOutput == FGOutput::XeFG || (activeOutput == LowLatencyMode::Reflex && fgOutput == FGOutput::FSRFG))
         return InputResult::UsingDifferentInput;
+
+    // XeLL takes the first marker of a frame. Streamline's come after the batch's presents, too late to time the
+    // GPU, and with the driver's Reflex they don't get here at all (dlssg_game_present).
+    if (xell_follows_dlssg())
+        return InputResult::Ok;
 
     // The presents give AntiLag 2 the frame types of the game's DLSSG (dlssg_present)
     if (marker_params.marker_type == MarkerType::OUT_OF_BAND_PRESENT_START && !marker_params.interpolated.has_value() &&
@@ -1267,8 +1277,36 @@ void InputCommon::dlssg_present()
     tech->set_async_marker(nullptr, { 0, MarkerType::OUT_OF_BAND_PRESENT_START, interpolated });
 }
 
+void InputCommon::dlssg_game_present(ID3D12CommandQueue* gameQueue, bool fgActive, uint32_t generatedFrames,
+                                     bool presented)
+{
+    if (!xell_follows_dlssg())
+        return;
+
+    auto xell = std::dynamic_pointer_cast<XeLL>(currently_active_tech.load());
+
+    if (xell == nullptr)
+        return;
+
+    if (!presented)
+        xell->report_frame_generation(gameQueue, fgActive, generatedFrames);
+
+    if (fgActive)
+        xell->report_present(last_present_start_frame_id, generatedFrames, presented);
+}
+
 void InputCommon::xefg_marker(void* xellContext, uint32_t frame_id, uint32_t marker)
 {
+    // The XeLL output following OptiScaler's DLSSG sends these too (dlssg_game_present)
+    if (State::Instance().activeFgOutput != FGOutput::XeFG)
+    {
+        // Still counts as another XeFG for update()'s multi frame check
+        if (marker == 80860000 || marker == 80860001)
+            xefg_marker_present = present_count + 1;
+
+        return;
+    }
+
     static std::atomic_bool seen[2] {};
 
     MarkerType type;
@@ -1390,8 +1428,9 @@ void InputCommon::update()
         bool xefgPaced = xefg_paced();
 
         // LatencyFlex and XeLL without XeFG fall apart with more than 1 generated DLSSG frame, AntiLag 2 only with
-        // Dynamic MFG (its frame types come from the presents, dlssg_present). Only when it starts, Force State can be
-        // changed back afterwards. The FPS Limiter doesn't care.
+        // Dynamic MFG (its frame types come from the presents, dlssg_present). XeLL is fine when it's told about
+        // OptiScaler's DLSSG (dlssg_game_present). Only when it starts, Force State can be changed back afterwards.
+        // The FPS Limiter doesn't care.
         static bool lastMultiFrame = false;
         bool multiFrame = state.dlssgLastSetMode == sl::DLSSGMode::eDynamic ||
                           (state.dlssgDetectedInterpolationCount > 1 && activeOutput != LowLatencyMode::AntiLag2);
@@ -1401,7 +1440,7 @@ void InputCommon::update()
         bool otherXefg = lastMarker != 0 && present_count + 1 - lastMarker < 20;
 
         if (!std::exchange(lastMultiFrame, multiFrame) && multiFrame && activeOutput != LowLatencyMode::Reflex &&
-            activeOutput != LowLatencyMode::FpsLimiter && !xefgPaced && !otherXefg &&
+            activeOutput != LowLatencyMode::FpsLimiter && !xefgPaced && !otherXefg && !xell_follows_dlssg() &&
             Config::Instance()->FN_ForceReflex.value_or_default() != ForceReflex::ForceEnable)
         {
             LOG_INFO("Multi frame generation, disabling {}", magic_enum::enum_name(activeOutput));
@@ -1472,9 +1511,9 @@ void InputCommon::update()
                                      activeOutput == LowLatencyMode::Reflex && output_api == API::Vulkan &&
                                      VulkanHooks::LowLatencySwapchain() != VK_NULL_HANDLE;
 
-        if (xefg_paced() || driverCountsFg || driverCountsGameDlssg)
+        if (xefg_paced() || (fgActive && xell_follows_dlssg()) || driverCountsFg || driverCountsGameDlssg)
         {
-            // XeLL already counts XeFG's generated frames, the driver DLSSG's
+            // XeLL already counts the generated frames it's told about, the driver DLSSG's
         }
         else if (fgActive)
         {
