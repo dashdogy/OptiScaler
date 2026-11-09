@@ -18,13 +18,16 @@ class XeFG_DynamicMFG
         bool supports1X = false;  // the output can switch frame generation off and keep its count
         bool allow1X = false;     // with supports1X: may use 1X (at 2X it is the only other step)
         bool targetAsCap = false; // the target is also the FPS limit (FrameLimit::targetFps)
+        // The game's waits are time one step less could use, see XeFG_DynamicCount
+        bool waitsAreHeadroom = true;
     };
 
     // [XeFG]: 1X and the cap
     static Settings XeFGSettings();
 
     // [DLSSG]: changes go to Streamline's numFramesToGenerate. No 1X (DLSSG's mode off isn't known to be
-    // seamless) and no cap (FrameLimit::targetFps only holds XeFG's).
+    // seamless) and no cap (FrameLimit::targetFps only holds XeFG's). Its waits aren't headroom: Streamline keeps
+    // Reflex on.
     static Settings DLSSGSettings();
 
     struct Result

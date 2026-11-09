@@ -31,6 +31,9 @@ XeFG_DynamicMFG::Settings XeFG_DynamicMFG::DLSSGSettings()
     const float target = config->FGDLSSGFramerateTargetDMFG.value_or_default();
     settings.targetFps = target >= 9.5f ? target : 0.0f;
     settings.rounding = config->FGDLSSGRoundingDMFG.value_or_default();
+    // Streamline keeps Reflex on for this output: a GPU bound game's waits (the driver's sleep, the present into
+    // Streamline's swapchain) are the GPU's time, not spare time
+    settings.waitsAreHeadroom = false;
     return settings;
 }
 
@@ -127,7 +130,8 @@ XeFG_DynamicMFG::Result XeFG_DynamicMFG::Update(const Settings& settings, int ta
 
             count =
                 _count.Update({ now, state.lastFGFrameTime, waitMs, target, refresh,
-                                config->FramerateLimit.value_or_default(), targetCount, current, rounding, minCount });
+                                config->FramerateLimit.value_or_default(), targetCount, current, rounding, minCount,
+                                settings.waitsAreHeadroom });
         }
 
         _capActive = cap;
