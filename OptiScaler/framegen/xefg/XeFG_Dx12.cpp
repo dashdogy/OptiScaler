@@ -1455,8 +1455,8 @@ bool XeFG_Dx12::SetResource(Dx12Resource* inputResource)
         if (!noted[type == FG_ResourceType::Velocity ? 1 : 0][same ? 1 : 0].exchange(true))
         {
             LOG_INFO("Streamline re-tagged {} for one frame: {:X} {}x{} state {:X} -> {:X} {}x{} state {:X}, {}",
-                     magic_enum::enum_name(type), (size_t) first.resource, first.width, first.height, (UINT) first.state,
-                     (size_t) inputResource->resource, inputResource->width, inputResource->height,
+                     magic_enum::enum_name(type), (size_t) first.resource, first.width, first.height,
+                     (UINT) first.state, (size_t) inputResource->resource, inputResource->width, inputResource->height,
                      (UINT) inputResource->state, same ? "same, ignored" : "using the last");
         }
 

@@ -77,8 +77,8 @@ static const XeLLDisplayInfo* XeLLPacedDisplayInfo(const XeLLDisplayInfo* info, 
     {
         auto version = XeLLProxy::Version();
 
-        return !Config::Instance()->XeLLVsyncPacing.value_or_default() && version.major == 1 &&
-               version.minor == 3 && IdentifyGpu::getPrimaryGpu().vendorId != VendorId::Intel;
+        return !Config::Instance()->XeLLVsyncPacing.value_or_default() && version.major == 1 && version.minor == 3 &&
+               IdentifyGpu::getPrimaryGpu().vendorId != VendorId::Intel;
     }();
 
     if (!rewrite || info == nullptr || info->version != 1 || !info->fixedVsync || info->fixedTearing ||
