@@ -99,6 +99,13 @@ class XeLL : public LowLatencyTech
     // game's present.
     void report_frame_generation(ID3D12CommandQueue* gameQueue, bool enabled, uint32_t generatedFrames);
 
+    // The game's own DLSSG stopping sends nothing, XeLL would keep counting its generated frames in the FPS limit
+    void stop_frame_generation()
+    {
+        if (fg_reported)
+            report_frame_generation(app_queue, false, 0);
+    }
+
     // Around the game's present, as XeFG's proxy swapchain: the frame's generated frame count and the markers XeFG
     // sends around its work. The last one is what XeLL times the end of the frame's GPU work with.
     void report_present(uint64_t frame_id, uint32_t generatedFrames, bool presented);
