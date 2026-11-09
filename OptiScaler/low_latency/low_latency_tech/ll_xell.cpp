@@ -1,6 +1,7 @@
 ﻿#include "pch.h"
 #include "ll_xell.h"
 
+#include <chrono>
 #include <magic_enum.hpp>
 #include <proxies/XeLL_Proxy.h>
 #include <nvapi/fakenvapi/log.h>
@@ -54,6 +55,14 @@ bool XeLL::init(IUnknown* pDevice)
 void XeLL::deinit()
 {
     o_xellDestroyContext(xell_context);
+
+    fg_reported = false;
+
+    if (app_queue != nullptr)
+    {
+        app_queue->Release();
+        app_queue = nullptr;
+    }
 
     // Held while the context lives
     if (dx12_device != nullptr)
@@ -187,7 +196,98 @@ void XeLL::sleep(std::optional<uint32_t> frame_id)
         sleep_last_id = simulation_start_last_id + 1;
     }
 
+    if (!fg_reported)
+    {
+        xell_sleep((uint32_t) sleep_last_id);
+        return;
+    }
+
+    const auto start = std::chrono::steady_clock::now();
     xell_sleep((uint32_t) sleep_last_id);
+    const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+
+    constexpr uint32_t reportSleeps = 600;
+    constexpr uint32_t reportLogLimit = 16;
+
+    reported_sleep_ms += ms;
+
+    if (ms >= 0.5)
+        reported_slept++;
+
+    if (++reported_sleeps == reportSleeps)
+    {
+        if (reported_sleep_logs < reportLogLimit)
+        {
+            reported_sleep_logs++;
+            LOG_INFO("XeLL for frame generation: slept {:.2f} ms per frame, {} of {} frames",
+                     reported_sleep_ms / reportSleeps, reported_slept, reportSleeps);
+        }
+
+        reported_sleep_ms = 0.0;
+        reported_sleeps = 0;
+        reported_slept = 0;
+    }
+}
+
+void XeLL::report_frame_generation(ID3D12CommandQueue* gameQueue, bool enabled, uint32_t generatedFrames)
+{
+    auto context = (InputXeLL::xell_input_handle_t) xell_context;
+
+    if (gameQueue != app_queue)
+    {
+        // Goes before the display info, XeLL has nowhere to keep that without a queue
+        if (gameQueue != nullptr)
+            gameQueue->AddRef();
+
+        auto queueResult = InputXeLL::D3D12SetAppQueue(context, gameQueue);
+
+        if (app_queue != nullptr)
+            app_queue->Release();
+
+        app_queue = gameQueue;
+
+        auto displayResult = gameQueue != nullptr ? InputXeLL::SetVsyncOffDisplayInfo(context) : XELL_RESULT_SUCCESS;
+
+        // The other calls follow from these, a libxell without them just never sleeps
+        if (queueResult != XELL_RESULT_SUCCESS || displayResult != XELL_RESULT_SUCCESS)
+        {
+            LOG_WARN("XeLL can't follow the frame generation: app queue {}, display info {}", (int) queueResult,
+                     (int) displayResult);
+        }
+    }
+
+    // The count stays with XeLL while frame generation is off
+    if (enabled != fg_reported || (enabled && generatedFrames != 0 && generatedFrames != fg_reported_frames))
+    {
+        auto result = InputXeLL::SetFgEnabled(context, enabled ? 1 : 0, generatedFrames);
+
+        if (enabled != fg_reported)
+        {
+            LOG_INFO("XeLL follows the frame generation: enabled {}, {} generated frames, result {}", enabled,
+                     generatedFrames, (int) result);
+        }
+
+        fg_reported_frames = generatedFrames;
+        fg_reported = enabled;
+    }
+}
+
+void XeLL::report_present(uint64_t frame_id, uint32_t generatedFrames, bool presented)
+{
+    if (frame_id == 0 || !fg_reported)
+        return;
+
+    // XeLL frame ids are uint32_t here too
+    auto id = (uint32_t) frame_id;
+
+    if (presented)
+    {
+        add_marker(id, (xell_latency_marker_type_t) 80860001);
+        return;
+    }
+
+    InputXeLL::SetGeneratedFramesCount((InputXeLL::xell_input_handle_t) xell_context, id, generatedFrames);
+    add_marker(id, (xell_latency_marker_type_t) 80860000);
 }
 
 xell_result_t XeLL::xellGetFramesReports(xell_frame_report_t* outdata) const

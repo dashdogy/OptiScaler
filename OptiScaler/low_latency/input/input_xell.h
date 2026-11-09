@@ -89,6 +89,9 @@ class InputXeLL
     static xell_result_t SetContextParameterP(xell_input_handle_t context, uint32_t param1,
                                               uint64_t param2); // return 0
     static xell_result_t SetDisplayInfo(xell_input_handle_t context, void* displayInfo);
+
+    // For frame generation other than XeFG, the display info XeFG sends with V-Sync off. See XeLLPacedDisplayInfo.
+    static xell_result_t SetVsyncOffDisplayInfo(xell_input_handle_t context);
     static xell_result_t SetFgEnabled(xell_input_handle_t context, uint32_t enabled, uint32_t frameId);
     static xell_result_t SetGeneratedFramesCount(xell_input_handle_t context, uint32_t frameId,
                                                  uint32_t framesCount); // framesCount 0 - 3

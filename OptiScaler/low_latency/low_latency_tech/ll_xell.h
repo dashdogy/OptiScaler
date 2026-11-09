@@ -2,6 +2,7 @@
 
 #include "low_latency_tech.h"
 
+#include <atomic>
 #include <xell_d3d12.h>
 #include "low_latency/input/input_xell.h"
 #include <proxies/XeLL_Proxy.h>
@@ -21,6 +22,17 @@ class XeLL : public LowLatencyTech
 
     // XeFG's own context next to a Reflex or AntiLag 2 output: it gets the game's markers and never sleeps
     bool markers_only = false;
+
+    // What report_frame_generation last told XeLL. XeLL keeps using the queue, it stays referenced until XeLL lets go.
+    ID3D12CommandQueue* app_queue = nullptr;
+    std::atomic_bool fg_reported = false;
+    uint32_t fg_reported_frames = 0;
+
+    // How much it slept for the reported frame generation, for the log
+    double reported_sleep_ms = 0.0;
+    uint32_t reported_sleeps = 0;
+    uint32_t reported_slept = 0;
+    uint32_t reported_sleep_logs = 0;
 
     decltype(&xellDestroyContext) o_xellDestroyContext = nullptr;
     decltype(&xellSetSleepMode) o_xellSetSleepMode = nullptr;
@@ -81,4 +93,13 @@ class XeLL : public LowLatencyTech
     xell_result_t xellGetFramesReports(xell_frame_report_t* outdata) const;
 
     void set_markers_only(bool value) { markers_only = value; }
+
+    // XeLL on every GPU but Intel's only sleeps for XeFG: it times the GPU on XeFG's queue, its algorithm needs the
+    // present mode and that frame generation runs. Frame generation other than XeFG tells it the same here, before the
+    // game's present.
+    void report_frame_generation(ID3D12CommandQueue* gameQueue, bool enabled, uint32_t generatedFrames);
+
+    // Around the game's present, as XeFG's proxy swapchain: the frame's generated frame count and the markers XeFG
+    // sends around its work. The last one is what XeLL times the end of the frame's GPU work with.
+    void report_present(uint64_t frame_id, uint32_t generatedFrames, bool presented);
 };
