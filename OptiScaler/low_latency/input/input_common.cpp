@@ -294,7 +294,10 @@ bool InputCommon::xefg_paced()
 
 bool InputCommon::xell_follows_dlssg()
 {
-    return activeOutput == LowLatencyMode::XeLL && State::Instance().activeFgOutput == FGOutput::DLSSG;
+    auto& state = State::Instance();
+
+    return activeOutput == LowLatencyMode::XeLL &&
+           (state.activeFgOutput == FGOutput::DLSSG || state.activeFgInput == FGInput::NvngxFG);
 }
 
 LowLatencyInput InputCommon::default_input()
@@ -717,6 +720,23 @@ InputResult InputCommon::set_async_marker(const InputContext& inputContext, ID3D
     // Async markers only come with frame generation, the game's own when it's the game's input
     if (!inputContext.localContext)
         mark_frame_generation(inputContext.caller);
+
+    // DLSSG's present thread starts each batch of generated and real frames with this (dlssg_present)
+    if (marker_params.marker_type == MarkerType::OUT_OF_BAND_RENDERSUBMIT_START)
+    {
+        dlssg_batch_presents = 0;
+        dlssg_batches_marked = true;
+    }
+
+    // The game's own DLSSG marks its present on the game's queue
+    if ((marker_params.marker_type == MarkerType::PRESENT_START ||
+         marker_params.marker_type == MarkerType::PRESENT_END) &&
+        State::Instance().activeFgInput == FGInput::NvngxFG && inputContext.caller == activeInput &&
+        !inputContext.localContext && pCommandQueue != nullptr)
+    {
+        auto frames = static_cast<uint32_t>(std::max(State::Instance().dlssgDetectedInterpolationCount, 0));
+        dlssg_game_present(pCommandQueue, frames > 0, frames, marker_params.marker_type == MarkerType::PRESENT_END);
+    }
 
     // The game's describe presents that don't happen. With the Reflex output OptiScaler's FSR-FG sends the async
     // markers of its own presents (fg_output_present), its XeFG does for every output (also xefg_marker, XeFG itself
@@ -1245,8 +1265,10 @@ void InputCommon::fg_output_present(ID3D12CommandQueue* presentQueue, bool prese
 }
 
 // AntiLag 2 only knows the generated frames from the frame type set right before each present. DLSSG's out of band
-// present markers don't give a usable one with more than 1 generated frame, the presents themselves do: the first of
-// each batch as the real frame. OptiScaler's XeFG sets it in fg_output_present, its real frame is the last of a batch.
+// present markers don't give a usable one with more than 1 generated frame, the presents themselves do. DLSSG's real
+// frame is the last of each batch, as OptiScaler's XeFG's in fg_output_present. Counted from the batch's start marker,
+// a batch cut short would leave every later real frame on the wrong present until frame generation restarts. Without
+// those markers it's counted from the first real frame, which comes alone.
 bool InputCommon::dlssg_types_presents()
 {
     auto fgOutput = State::Instance().activeFgOutput;
@@ -1263,6 +1285,7 @@ void InputCommon::dlssg_present()
     if (!dlssg_types_presents())
     {
         presents = 0;
+        dlssg_batch_presents = 0;
         return;
     }
 
@@ -1273,6 +1296,9 @@ void InputCommon::dlssg_present()
 
     auto frames = static_cast<uint32_t>(State::Instance().dlssgDetectedInterpolationCount) + 1;
     bool interpolated = presents++ % frames != 0;
+
+    if (dlssg_batches_marked)
+        interpolated = (dlssg_batch_presents.fetch_add(1) % frames) + 1 < frames;
 
     tech->set_async_marker(nullptr, { 0, MarkerType::OUT_OF_BAND_PRESENT_START, interpolated });
 }
@@ -1425,6 +1451,13 @@ void InputCommon::update()
     // Force State can change at any time, XeLL takes a changed state through its sleep mode
     if (current_tech != nullptr)
     {
+        if (state.activeFgInput == FGInput::NvngxFG && state.dlssgDetectedInterpolationCount == 0 &&
+            activeOutput == LowLatencyMode::XeLL)
+        {
+            if (auto xell = std::dynamic_pointer_cast<XeLL>(current_tech))
+                xell->stop_frame_generation();
+        }
+
         bool xefgPaced = xefg_paced();
 
         // LatencyFlex and XeLL without XeFG fall apart with more than 1 generated DLSSG frame, AntiLag 2 only with
@@ -1511,7 +1544,9 @@ void InputCommon::update()
                                      activeOutput == LowLatencyMode::Reflex && output_api == API::Vulkan &&
                                      VulkanHooks::LowLatencySwapchain() != VK_NULL_HANDLE;
 
-        if (xefg_paced() || (fgActive && xell_follows_dlssg()) || driverCountsFg || driverCountsGameDlssg)
+        bool xellCountsFg = (fgActive || state.dlssgDetectedInterpolationCount > 0) && xell_follows_dlssg();
+
+        if (xefg_paced() || xellCountsFg || driverCountsFg || driverCountsGameDlssg)
         {
             // XeLL already counts the generated frames it's told about, the driver DLSSG's
         }

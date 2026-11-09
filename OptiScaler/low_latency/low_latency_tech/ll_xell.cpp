@@ -233,6 +233,13 @@ void XeLL::report_frame_generation(ID3D12CommandQueue* gameQueue, bool enabled, 
 {
     auto context = (InputXeLL::xell_input_handle_t) xell_context;
 
+    // XeLL times the GPU with direct command lists on it
+    if (gameQueue != nullptr && gameQueue != app_queue && gameQueue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT)
+    {
+        LOG_WARN("XeLL can't follow the frame generation on a queue that isn't a direct one");
+        return;
+    }
+
     if (gameQueue != app_queue)
     {
         // Goes before the display info, XeLL has nowhere to keep that without a queue

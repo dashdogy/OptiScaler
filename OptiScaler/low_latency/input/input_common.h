@@ -100,8 +100,13 @@ class InputCommon
 
     static bool xefg_paced();
 
-    // XeLL output with OptiScaler's DLSSG output: XeLL is told about the frame generation (dlssg_game_present)
+    // XeLL output with DLSSG, OptiScaler's output or the game's own through an Nvngx provider: XeLL is told about the
+    // frame generation (dlssg_game_present)
     static bool xell_follows_dlssg();
+
+    // Presents of DLSSG's current batch of generated and real frames, and whether its markers show where batches start
+    inline static std::atomic_uint32_t dlssg_batch_presents = 0;
+    inline static std::atomic_bool dlssg_batches_marked = false;
 
     inline static flag_set<LowLatencyInput> avaliableInputs {};
     inline static LowLatencyInput activeInput = LowLatencyInput::None;
@@ -180,7 +185,8 @@ class InputCommon
     static bool dlssg_types_presents();
     static void dlssg_present();
 
-    // OptiScaler's DLSSG output has no XeFG to feed the XeLL output, around the game's present it does the same
+    // DLSSG has no XeFG to feed the XeLL output, around the game's present this does the same. From FGPresent for
+    // OptiScaler's DLSSG, from the async present markers on the game's queue for the game's own.
     static void dlssg_game_present(ID3D12CommandQueue* gameQueue, bool fgActive, uint32_t generatedFrames,
                                    bool presented);
 
