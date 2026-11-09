@@ -29,7 +29,7 @@ struct Dx12Resource
     ID3D12Resource* copy = nullptr;
     int frameIndex = -1;
     bool waitingExecution = false;
-    bool lastTagWins = false; // a later tag of Depth / Velocity for this frame replaces the first
+    bool streamlineTag = false; // tagged through Streamline with a frame id: a second tag of the frame is logged
 
     ID3D12Resource* GetResource() { return (copy == nullptr) ? resource : copy; }
 };
