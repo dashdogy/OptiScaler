@@ -231,6 +231,14 @@ const std::vector<GameConfig> gameConfigs = {
         .defaults = { UseNtdllHooks = false, FGPreserveSwapChain = false },
     },
 
+    // Silver Palace
+    // Kernel hooks required for the Nvngx FG input: the ntdll hook stops seeing loads after the game's
+    // SilverPalaceClient-Win64-ShippingBase.dll starts, so Streamline's nvngx.dll and sl.interposer.dll weren't caught
+    {
+        .ueExes = { "silverpalaceclient" },
+        .defaults = { UseNtdllHooks = false },
+    },
+
     // Zenless Zone Zero
     // IgnoreTagsWithoutHudlessForFG fixes flipped Unity MVs/Depth
     {
