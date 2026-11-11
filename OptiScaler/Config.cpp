@@ -268,6 +268,8 @@ bool Config::Reload(std::filesystem::path iniPath)
             if (FGDLSSGRoundingDMFG.has_value() &&
                 (FGDLSSGRoundingDMFG.value() < 0 || FGDLSSGRoundingDMFG.value() > 2))
                 FGDLSSGRoundingDMFG.reset();
+
+            FGDLSSGTargetAsCapDMFG.set_from_config(readBool("DLSSG", "TargetAsCapDMFG"));
         }
 
         {
@@ -1526,6 +1528,8 @@ bool Config::SaveIni()
         ini.SetValue("DLSSG", "DynamicMFG", GetBoolValue(Instance()->FGDLSSGDynamicMFG.value_for_config()).c_str());
         ini.SetValue("DLSSG", "RoundingDMFG",
                      GetIntValue(Instance()->FGDLSSGRoundingDMFG.value_for_config()).c_str());
+        ini.SetValue("DLSSG", "TargetAsCapDMFG",
+                     GetBoolValue(Instance()->FGDLSSGTargetAsCapDMFG.value_for_config()).c_str());
     }
 
     // Reprojection

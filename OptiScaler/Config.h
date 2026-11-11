@@ -763,6 +763,7 @@ class Config
     CustomOptional<float> FGDLSSGFramerateTargetDMFG { 0.0f }; // 0.0 means auto-detects the display refresh rate
     CustomOptional<bool> FGDLSSGDynamicMFG { false }; // OptiScaler's Dynamic MFG, up to FGDLSSGInterpolationCount
     CustomOptional<int> FGDLSSGRoundingDMFG { 1 };    // 0 at most, 1 around, 2 at least the target
+    CustomOptional<bool> FGDLSSGTargetAsCapDMFG { false }; // The Dynamic MFG target is also the FPS limit
 
     // Flip Meter
     CustomOptional<int> FGFlipMeterInterpolationCount { 1 };
