@@ -19,6 +19,7 @@
 #include "detours/detours.h"
 #include <shaders/reproject/mouseInputs/InputCollection.h>
 
+#include <fstream>
 #include <intrin.h>
 #pragma intrinsic(_ReturnAddress)
 
@@ -30,6 +31,22 @@ static std::wstring GetModulePath(HMODULE module)
     wchar_t buffer[MAX_PATH * 2] {};
     const auto len = GetModuleFileNameW(module, buffer, static_cast<DWORD>(std::size(buffer)));
     return std::wstring(buffer, len);
+}
+
+// A plugin's hooks reach it only through the interposer's own table, keyed by these names. Without the file there's
+// no telling, so it counts as missing.
+static bool InterposerHasHook(const std::wstring& interposerPath, std::string_view hookName)
+{
+    if (interposerPath.empty())
+        return false;
+
+    std::ifstream file(std::filesystem::path(interposerPath), std::ios::binary);
+
+    if (!file)
+        return false;
+
+    const std::string image((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    return image.find(hookName) != std::string::npos;
 }
 
 // Plugin may fail (denylist etc.) and leave pluginJSON empty
@@ -260,6 +277,32 @@ sl::Result StreamlineHooks::hkslInit(const sl::Preferences& pref, uint64_t sdkVe
                         }
                     }
                 }
+            }
+        }
+
+        // The streamline folder's DLSSG (2.14.16) gives its swapchain more buffers than the game asked for and hides
+        // them behind IDXGISwapChain::GetDesc. The game's interposer 2.2.1 (Like a Dragon: Pirate Yakuza in Hawaii) has no
+        // such hook: the game saw 6 buffers instead of 3, its GetBuffer for the fourth failed and the game crashed in the
+        // driver. Vulkan swapchains don't go through it.
+        if (hasNewerPlugin && renderApi != sl::RenderAPI::eVulkan)
+        {
+            const auto interposerPath =
+                hookedInterposerPath.empty() ? GetModulePath(hookedInterposerModule) : hookedInterposerPath;
+
+            if (!InterposerHasHook(interposerPath, "IDXGISwapChain_GetDesc"))
+            {
+                const auto& slVersion = State::Instance().streamlineVersion;
+
+                LOG_WARN("The game's Streamline {}.{}.{} has no swapchain GetDesc hook for the streamline folder's "
+                         "plugins, the game keeps its own",
+                         slVersion.major, slVersion.minor, slVersion.patch);
+
+                ImGui::InsertNotification({ ImGuiToastType::Warning, 20000,
+                                            "The game's Streamline is too old for the plugins in OptiScaler's "
+                                            "streamline folder, the game keeps its own. For more generated frames "
+                                            "use the DLSSG FG input." });
+
+                hasNewerPlugin = false;
             }
         }
 
