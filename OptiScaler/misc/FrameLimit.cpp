@@ -59,9 +59,12 @@ float FrameLimit::targetFps()
     auto& state = State::Instance();
     auto fpsLimit = Config::Instance()->FramerateLimit.value_or_default();
 
-    if (auto fg = state.currentFG; fg != nullptr && fg->IsActive() && !fg->IsPaused() &&
-                                   state.activeFgOutput == FGOutput::XeFG && state.xefgDynamicCapFps > 0.0f &&
-                                   (fpsLimit <= 0.0f || state.xefgDynamicCapFps < fpsLimit))
+    // Dynamic MFG's cap, for the output that runs it (XeFG on D3D12, DLSSG on D3D12 and Vulkan)
+    const bool dynamicOutput = state.activeFgOutput == FGOutput::XeFG || state.activeFgOutput == FGOutput::DLSSG;
+
+    if (auto fg = state.CurrentFG(); fg != nullptr && fg->IsActive() && !fg->IsPaused() && dynamicOutput &&
+                                     state.xefgDynamicCapFps > 0.0f &&
+                                     (fpsLimit <= 0.0f || state.xefgDynamicCapFps < fpsLimit))
     {
         return state.xefgDynamicCapFps;
     }

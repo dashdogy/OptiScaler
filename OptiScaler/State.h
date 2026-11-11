@@ -319,7 +319,8 @@ class State
     int vkGamePresentMode = -1;
     bool vkPresentModeChanged = false;
 
-    // XeFG Dynamic MFG with "Use target as cap": its target while it runs (0 = no cap), the FPS limit when lower
+    // XeFG or DLSSG Dynamic MFG with "Use target as cap": its target while it runs (0 = no cap), the FPS limit when
+    // lower
     float xefgDynamicCapFps = 0.0f;
 
     bool dlssgGameDMFGSupported = false;

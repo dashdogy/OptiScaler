@@ -25,9 +25,8 @@ class XeFG_DynamicMFG
     // [XeFG]: 1X and the cap
     static Settings XeFGSettings();
 
-    // [DLSSG]: changes go to Streamline's numFramesToGenerate. No 1X (DLSSG's mode off isn't known to be
-    // seamless) and no cap (FrameLimit::targetFps only holds XeFG's). Its waits aren't headroom: Streamline keeps
-    // Reflex on.
+    // [DLSSG]: changes go to Streamline's numFramesToGenerate, and the cap. No 1X (DLSSG's mode off isn't known to
+    // be seamless). Its waits aren't headroom: Streamline keeps Reflex on.
     static Settings DLSSGSettings();
 
     struct Result

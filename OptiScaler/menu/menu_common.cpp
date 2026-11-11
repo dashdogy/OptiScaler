@@ -5898,16 +5898,30 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
             ShowTooltip("Presented FPS to aim for, never above the FPS limit.\n"
                         "Auto: the FPS limit, or just under the refresh rate.");
 
+            const bool targetAsCap = config->FGDLSSGTargetAsCapDMFG.value_or_default();
+
+            ImGui::SameLine(0.0f, 16.0f);
+
+            if (bool cap = targetAsCap; ImGui::Checkbox("Use as FPS limit##dlssg", &cap))
+                config->FGDLSSGTargetAsCapDMFG = cap;
+
+            ShowTooltip("Also limits FPS to the target and uses the lowest\n"
+                        "multiplier that reaches it.");
+
+            // The cap holds the target with its own count logic
+            ImGui::BeginDisabled(targetAsCap);
+
             const char* roundings[] = { "At most target", "Around target", "At least target" };
             int rounding = std::clamp(config->FGDLSSGRoundingDMFG.value_or_default(), 0, 2);
 
-            ImGui::SameLine(0.0f, 16.0f);
             ImGui::SetNextItemWidth(150.0f * menuResScale);
             if (ImGui::Combo("##dlssgRounding", &rounding, roundings, IM_ARRAYSIZE(roundings)))
                 config->FGDLSSGRoundingDMFG = rounding;
 
             ShowTooltip("Where FPS may land, as multipliers only come in steps:\n"
                         "at most, around or at least the target FPS.");
+
+            ImGui::EndDisabled();
         }
 
         if (dlssgMaxCount > 1)
