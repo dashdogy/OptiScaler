@@ -40,6 +40,32 @@ static bool marker_supported(InputMarkerMode mode, MarkerType type)
     }
 }
 
+// XeLL times the GPU with direct command lists on its app queue. Streamline's DLSSG can mark the game's presents on a
+// queue of its own that isn't a direct one (Crimson Desert), XeLL then never learned about the generated frames and its
+// FPS limit held the game's frames instead of the presented ones. The swapchain's queue is always a direct one.
+static ID3D12CommandQueue* xell_app_queue(ID3D12CommandQueue* markerQueue)
+{
+    if (markerQueue == nullptr || markerQueue->GetDesc().Type == D3D12_COMMAND_LIST_TYPE_DIRECT)
+        return markerQueue;
+
+    // Only read while the game presents to that swapchain, which keeps its queue alive. XeLL references it.
+    auto swapchainQueue = State::Instance().currentCommandQueue;
+
+    if (swapchainQueue == nullptr || swapchainQueue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT)
+        return markerQueue;
+
+    static std::atomic_bool logged = false;
+
+    if (!logged.exchange(true))
+    {
+        LOG_INFO("XeLL follows the frame generation on the swapchain's queue, the game's present markers come on a {} "
+                 "queue",
+                 magic_enum::enum_name(markerQueue->GetDesc().Type));
+    }
+
+    return swapchainQueue;
+}
+
 // private
 bool InputCommon::deinit_current_tech()
 {
@@ -1315,7 +1341,7 @@ void InputCommon::dlssg_game_present(ID3D12CommandQueue* gameQueue, bool fgActiv
         return;
 
     if (!presented)
-        xell->report_frame_generation(gameQueue, fgActive, generatedFrames);
+        xell->report_frame_generation(xell_app_queue(gameQueue), fgActive, generatedFrames);
 
     if (fgActive)
         xell->report_present(last_present_start_frame_id, generatedFrames, presented);
@@ -1544,7 +1570,11 @@ void InputCommon::update()
                                      activeOutput == LowLatencyMode::Reflex && output_api == API::Vulkan &&
                                      VulkanHooks::LowLatencySwapchain() != VK_NULL_HANDLE;
 
-        bool xellCountsFg = (fgActive || state.dlssgDetectedInterpolationCount > 0) && xell_follows_dlssg();
+        // Only once XeLL was told about the generated frames (dlssg_game_present), until then its limit holds the
+        // game's frames
+        auto xell = std::dynamic_pointer_cast<XeLL>(current_tech);
+        bool xellCountsFg = (fgActive || state.dlssgDetectedInterpolationCount > 0) && xell_follows_dlssg() &&
+                            xell != nullptr && xell->follows_frame_generation();
 
         if (xefg_paced() || xellCountsFg || driverCountsFg || driverCountsGameDlssg)
         {

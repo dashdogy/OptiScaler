@@ -236,7 +236,10 @@ void XeLL::report_frame_generation(ID3D12CommandQueue* gameQueue, bool enabled, 
     // XeLL times the GPU with direct command lists on it
     if (gameQueue != nullptr && gameQueue != app_queue && gameQueue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT)
     {
-        LOG_WARN("XeLL can't follow the frame generation on a queue that isn't a direct one");
+        // Every frame otherwise
+        if (!std::exchange(queue_refused_logged, true))
+            LOG_WARN("XeLL can't follow the frame generation on a queue that isn't a direct one");
+
         return;
     }
 
