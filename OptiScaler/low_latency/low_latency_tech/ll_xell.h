@@ -27,6 +27,7 @@ class XeLL : public LowLatencyTech
     ID3D12CommandQueue* app_queue = nullptr;
     std::atomic_bool fg_reported = false;
     uint32_t fg_reported_frames = 0;
+    bool queue_refused_logged = false;
 
     // How much it slept for the reported frame generation, for the log
     double reported_sleep_ms = 0.0;
@@ -98,6 +99,9 @@ class XeLL : public LowLatencyTech
     // present mode and that frame generation runs. Frame generation other than XeFG tells it the same here, before the
     // game's present.
     void report_frame_generation(ID3D12CommandQueue* gameQueue, bool enabled, uint32_t generatedFrames);
+
+    // Whether XeLL was told about the frame generation, its FPS limit then counts the generated frames itself
+    bool follows_frame_generation() const { return fg_reported; }
 
     // The game's own DLSSG stopping sends nothing, XeLL would keep counting its generated frames in the FPS limit
     void stop_frame_generation()
