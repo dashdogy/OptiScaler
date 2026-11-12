@@ -49,6 +49,24 @@ static bool InterposerHasHook(const std::wstring& interposerPath, std::string_vi
     return image.find(hookName) != std::string::npos;
 }
 
+// Streamline refuses any plugin newer than the game's interposer for these application IDs
+// (ENABLE_DISALLOW_NEWER_PLUGINS_WAR, isLoadingAllowed in sl.plugin/plugin.cpp): COD Black Ops 6 (Modern Warfare 4
+// uses its ID), F1 24, Modern Warfare III (2023) and the Battlefield 6 open beta. The streamline folder's plugins
+// would load none of DLSS, Reflex or DLSSG there.
+static bool RefusesNewerPlugins(uint32_t applicationId)
+{
+    switch (applicationId)
+    {
+    case 0x0623e7c8:
+    case 0x0616fc0b:
+    case 0x061198bf:
+    case 0x06323d82:
+        return true;
+    default:
+        return false;
+    }
+}
+
 // Plugin may fail (denylist etc.) and leave pluginJSON empty
 static bool HasPluginJson(bool result, const char** pluginJSON)
 {
@@ -278,6 +296,22 @@ sl::Result StreamlineHooks::hkslInit(const sl::Preferences& pref, uint64_t sdkVe
                     }
                 }
             }
+        }
+
+        // MW4 (1.7.1 RC): with the streamline folder's 2.14.16 plugins Streamline refused every plugin for the game's
+        // application ID, so DLSS and DLSSG were gone from the menu. Vulkan games go through the same check.
+        if (hasNewerPlugin && RefusesNewerPlugins(localPref.applicationId))
+        {
+            LOG_WARN("Streamline refuses plugins newer than the game's for application id 0x{:08x}, the game keeps "
+                     "its own",
+                     localPref.applicationId);
+
+            ImGui::InsertNotification({ ImGuiToastType::Warning, 20000,
+                                        "Streamline refuses newer plugins for this game, so it keeps its own instead "
+                                        "of the ones in OptiScaler's streamline folder. For more generated frames use "
+                                        "the DLSSG FG input." });
+
+            hasNewerPlugin = false;
         }
 
         // The streamline folder's DLSSG (2.14.16) gives its swapchain more buffers than the game asked for and hides
