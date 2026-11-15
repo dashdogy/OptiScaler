@@ -163,7 +163,9 @@ HRESULT DxgiFactoryWrappedCalls::CreateSwapChain(IDXGIFactory* realFactory, Wrap
             D3D12Hooks::CaptureDevice((ID3D12CommandQueue*) real);
         }
 
-        if (State::Instance().currentD3D12Device != nullptr)
+        // The nested call made for the FG swapchain carries the FG library's queue. Keep the D3D12 objects the outer
+        // call (or the D3D11 interop) chose: the interop reuses them when the game recreates its swapchain.
+        if (!_skipFGSwapChainCreation && State::Instance().currentD3D12Device != nullptr)
         {
             WithDx12::SetD3D12Objects(State::Instance().currentD3D12Device, State::Instance().currentCommandQueue,
                                       D3D12_COMMAND_LIST_TYPE_DIRECT);
@@ -576,7 +578,7 @@ HRESULT DxgiFactoryWrappedCalls::CreateSwapChainForHwnd(IDXGIFactory2* realFacto
             D3D12Hooks::CaptureDevice((ID3D12CommandQueue*) real);
         }
 
-        if (State::Instance().currentD3D12Device != nullptr)
+        if (!_skipFGSwapChainCreation && State::Instance().currentD3D12Device != nullptr)
         {
             WithDx12::SetD3D12Objects(State::Instance().currentD3D12Device, State::Instance().currentCommandQueue,
                                       D3D12_COMMAND_LIST_TYPE_DIRECT);
@@ -923,7 +925,7 @@ HRESULT DxgiFactoryWrappedCalls::CreateSwapChainForCoreWindow(IDXGIFactory2* rea
             D3D12Hooks::CaptureDevice(realQ);
         }
 
-        if (State::Instance().currentD3D12Device != nullptr)
+        if (!_skipFGSwapChainCreation && State::Instance().currentD3D12Device != nullptr)
             WithDx12::SetD3D12Objects(State::Instance().currentD3D12Device, State::Instance().currentCommandQueue,
                                       D3D12_COMMAND_LIST_TYPE_DIRECT);
     }

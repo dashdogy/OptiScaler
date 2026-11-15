@@ -601,7 +601,9 @@ HRESULT DxgiFactoryHooks::CreateSwapChain(IDXGIFactory* realFactory, IUnknown* p
             D3D12Hooks::CaptureDevice((ID3D12CommandQueue*) real);
         }
 
-        if (State::Instance().currentD3D12Device != nullptr)
+        // The nested call made for the FG swapchain carries the FG library's queue. Keep the D3D12 objects the outer
+        // call (or the D3D11 interop) chose: the interop reuses them when the game recreates its swapchain.
+        if (!_skipFGSwapChainCreation && State::Instance().currentD3D12Device != nullptr)
         {
             WithDx12::SetD3D12Objects(State::Instance().currentD3D12Device, State::Instance().currentCommandQueue,
                                       D3D12_COMMAND_LIST_TYPE_DIRECT);
@@ -1025,7 +1027,7 @@ HRESULT DxgiFactoryHooks::CreateSwapChainForHwnd(IDXGIFactory2* realFactory, IUn
             D3D12Hooks::CaptureDevice((ID3D12CommandQueue*) real);
         }
 
-        if (State::Instance().currentD3D12Device != nullptr)
+        if (!_skipFGSwapChainCreation && State::Instance().currentD3D12Device != nullptr)
         {
             WithDx12::SetD3D12Objects(State::Instance().currentD3D12Device, State::Instance().currentCommandQueue,
                                       D3D12_COMMAND_LIST_TYPE_DIRECT);
@@ -1392,7 +1394,7 @@ HRESULT DxgiFactoryHooks::CreateSwapChainForCoreWindow(IDXGIFactory2* realFactor
             D3D12Hooks::CaptureDevice((ID3D12CommandQueue*) real);
         }
 
-        if (State::Instance().currentD3D12Device != nullptr)
+        if (!_skipFGSwapChainCreation && State::Instance().currentD3D12Device != nullptr)
             WithDx12::SetD3D12Objects(State::Instance().currentD3D12Device, State::Instance().currentCommandQueue,
                                       D3D12_COMMAND_LIST_TYPE_DIRECT);
     }
@@ -1606,7 +1608,7 @@ HRESULT DxgiFactoryHooks::DLSSGCreateSwapChain(IDXGIFactory* realFactory, IUnkno
             D3D12Hooks::CaptureDevice((ID3D12CommandQueue*) real);
         }
 
-        if (State::Instance().currentD3D12Device != nullptr)
+        if (!_skipFGSwapChainCreation && State::Instance().currentD3D12Device != nullptr)
             WithDx12::SetD3D12Objects(State::Instance().currentD3D12Device, State::Instance().currentCommandQueue,
                                       D3D12_COMMAND_LIST_TYPE_DIRECT);
 
@@ -1929,7 +1931,7 @@ HRESULT DxgiFactoryHooks::DLSSGCreateSwapChainForHwnd(IDXGIFactory2* realFactory
             D3D12Hooks::CaptureDevice((ID3D12CommandQueue*) real);
         }
 
-        if (State::Instance().currentD3D12Device != nullptr)
+        if (!_skipFGSwapChainCreation && State::Instance().currentD3D12Device != nullptr)
             WithDx12::SetD3D12Objects(State::Instance().currentD3D12Device, State::Instance().currentCommandQueue,
                                       D3D12_COMMAND_LIST_TYPE_DIRECT);
 
@@ -2187,7 +2189,7 @@ HRESULT DxgiFactoryHooks::DLSSGCreateSwapChainForCoreWindow(IDXGIFactory2* realF
             D3D12Hooks::CaptureDevice((ID3D12CommandQueue*) real);
         }
 
-        if (State::Instance().currentD3D12Device != nullptr)
+        if (!_skipFGSwapChainCreation && State::Instance().currentD3D12Device != nullptr)
             WithDx12::SetD3D12Objects(State::Instance().currentD3D12Device, State::Instance().currentCommandQueue,
                                       D3D12_COMMAND_LIST_TYPE_DIRECT);
     }
