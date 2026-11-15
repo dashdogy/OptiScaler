@@ -337,8 +337,20 @@ static FfxErrorCode ffxFsr2ContextCreate_Vk(FfxFsr2Context* context, FfxFsr2Cont
     if (contextDescription->device == VK_NULL_HANDLE)
         return ccResult;
 
-    _vkDevice = (VkDevice) contextDescription->device;
-    LOG_DEBUG("VkDevice: {:X}", (size_t) _vkDevice);
+    // Only trust the description's device while no device is known. ffxGetDevice normally records the game's
+    // VkDevice first, and a title built against another FSR2 revision lays this struct out differently: World War Z
+    // has a size value in this field, and using it as a VkDevice crashed in vkCreateImageView. A replaced device is
+    // forgotten in FSR2VkDeviceDestroyed, so its successor is still picked up here.
+    if (_vkDevice == VK_NULL_HANDLE)
+    {
+        _vkDevice = (VkDevice) contextDescription->device;
+        LOG_DEBUG("VkDevice: {:X}", (size_t) _vkDevice);
+    }
+    else if (_vkDevice != (VkDevice) contextDescription->device)
+    {
+        LOG_WARN("Context description device {:X} is not the known VkDevice {:X}, keeping the known one",
+                 (size_t) contextDescription->device, (size_t) _vkDevice);
+    }
 
     // Re-initialise NGX when the device this input initialised it with was replaced
     if (!state.nvngxVkInited || (_nvngxInited && _nvngxDevice.load() != _vkDevice))
@@ -769,4 +781,8 @@ void FSR2VkDeviceDestroyed(VkDevice device)
 {
     VkDevice expected = device;
     _nvngxDevice.compare_exchange_strong(expected, nullptr);
+
+    // Forget the destroyed device, so the next ffxGetDevice or context creation records its replacement
+    if (_vkDevice == device)
+        _vkDevice = nullptr;
 }
