@@ -2506,10 +2506,20 @@ static void HookToDevice(ID3D12Device* InDevice)
         }
     }
 
-    if (State::Instance().activeFgOutput == FGOutput::DLSSG && !State::Instance().creatingD3DDevice &&
-        StreamlineProxy::LoadStreamline())
+    // A Vulkan game can create D3D12 devices before its Vulkan one (Red Dead Redemption 2 probes its adapters that
+    // way). Streamline can only be initialized once per process, so claiming it for D3D12 here left such a game
+    // without DLSSG: InitWithVulkan was refused afterwards. While the Vulkan loader is present, D3D12 games get
+    // Streamline initialized with their FG swapchain instead (DLSSG_Dx12). CreateSLOnThe2ndDevice titles keep the
+    // early initialization their device handling relies on.
+    const bool vulkanPossible =
+        vulkanModule != nullptr && !(State::Instance().gameQuirks & GameQuirk::CreateSLOnThe2ndDevice);
+
+    if (State::Instance().activeFgOutput == FGOutput::DLSSG && !State::Instance().creatingD3DDevice)
     {
-        StreamlineProxy::InitWithD3D12(InDevice);
+        if (vulkanPossible)
+            LOG_INFO("Vulkan loader present, Streamline will be initialized with the FG swapchain or the Vulkan device");
+        else if (StreamlineProxy::LoadStreamline())
+            StreamlineProxy::InitWithD3D12(InDevice);
     }
 }
 
