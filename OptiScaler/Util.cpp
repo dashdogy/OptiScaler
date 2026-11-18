@@ -5,7 +5,9 @@
 
 #include <proxies/Ntdll_Proxy.h>
 #include <proxies/KernelBase_Proxy.h>
+#include <proxies/D3D12_Proxy.h>
 
+#include <atomic>
 #include <shlobj.h>
 #include <cwctype>
 #include <queue>
@@ -935,9 +937,159 @@ void Util::GetDeviceRemovedReason(ID3D11Device* pDevice)
     }
 }
 
+static bool DredRequested()
+{
+    static const bool enabledByEnvironment = [] {
+        wchar_t value[2] {};
+        return GetEnvironmentVariableW(L"OPTISCALER_DRED", value, _countof(value)) == 1 && value[0] == L'1';
+    }();
+    return enabledByEnvironment || Config::Instance()->LogD3D12Dred.value_or_default();
+}
+
+void Util::EnableD3D12FaultDiagnostics()
+{
+    if (!DredRequested())
+        return;
+
+    static std::once_flag dredSettings;
+    std::call_once(dredSettings, [] {
+        auto getInterface = D3d12Proxy::D3D12GetDebugInterface_();
+        if (getInterface == nullptr)
+        {
+            LOG_WARN("DRED D3D12GetDebugInterface is unavailable");
+            return;
+        }
+
+        ID3D12DeviceRemovedExtendedDataSettings* settings = nullptr;
+        const auto result = getInterface(IID_PPV_ARGS(&settings));
+        if (FAILED(result) || settings == nullptr)
+        {
+            LOG_WARN("DRED settings failed ({:X})", static_cast<UINT>(result));
+            return;
+        }
+        settings->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+        settings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+        settings->Release();
+        LOG_INFO("DRED armed before D3D12 device creation");
+    });
+}
+
+template <class T> static bool ReadDred(const T* address, T& value)
+{
+    if (address == nullptr)
+        return false;
+    __try
+    {
+        value = *address;
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+static std::string DredName(const char* narrow, const wchar_t* wide)
+{
+    wchar_t name[97] {};
+    for (size_t i = 0; i < std::size(name) - 1; ++i)
+    {
+        wchar_t character = 0;
+        if (wide != nullptr)
+        {
+            if (!ReadDred(wide + i, character))
+                break;
+        }
+        else
+        {
+            char byte = 0;
+            if (narrow == nullptr || !ReadDred(narrow + i, byte))
+                break;
+            character = static_cast<unsigned char>(byte);
+        }
+        if (character == 0)
+            break;
+        name[i] = character < 32 ? L'?' : character;
+    }
+    return wstring_to_string(name);
+}
+
+static void LogDredAllocations(const char* kind, const D3D12_DRED_ALLOCATION_NODE1* head)
+{
+    D3D12_DRED_ALLOCATION_NODE1 node {};
+    for (UINT i = 0; i < 16 && ReadDred(head, node); ++i, head = node.pNext)
+        LOG_ERROR("DRED {} allocation index={} type={} name={}", kind, i, static_cast<UINT>(node.AllocationType),
+                  DredName(node.ObjectNameA, node.ObjectNameW));
+}
+
+static void ReportD3D12Fault(ID3D12Device* device, HRESULT reason)
+{
+    if (!DredRequested() || SUCCEEDED(reason))
+        return;
+
+    static std::atomic<ID3D12Device*> lastDevice = nullptr;
+    if (lastDevice.exchange(device) == device)
+        return;
+
+    LOG_ERROR("DRED device={:p} reason=0x{:X} rtssLoaded={} steamOverlayLoaded={}", static_cast<void*>(device),
+              static_cast<UINT>(reason), GetModuleHandleW(L"RTSSHooks64.dll") != nullptr,
+              GetModuleHandleW(L"gameoverlayrenderer64.dll") != nullptr);
+    ID3D12DeviceRemovedExtendedData1* dred = nullptr;
+    const auto result = device->QueryInterface(IID_PPV_ARGS(&dred));
+    if (FAILED(result) || dred == nullptr)
+    {
+        LOG_ERROR("DRED device query failed ({:X})", static_cast<UINT>(result));
+        return;
+    }
+
+    D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 breadcrumbs {};
+    const auto breadcrumbResult = dred->GetAutoBreadcrumbsOutput1(&breadcrumbs);
+    LOG_ERROR("DRED breadcrumbs result=0x{:X}", static_cast<UINT>(breadcrumbResult));
+    if (SUCCEEDED(breadcrumbResult))
+    {
+        auto head = breadcrumbs.pHeadAutoBreadcrumbNode;
+        D3D12_AUTO_BREADCRUMB_NODE1 node {};
+        for (UINT i = 0; i < 64 && ReadDred(head, node); ++i, head = node.pNext)
+        {
+            UINT completed = 0;
+            if (!ReadDred(node.pLastBreadcrumbValue, completed) || completed >= node.BreadcrumbCount)
+                continue;
+            LOG_ERROR("DRED pending index={} queue={:p} queueName={} list={:p} listName={} completed={} total={}", i,
+                      static_cast<void*>(node.pCommandQueue),
+                      DredName(node.pCommandQueueDebugNameA, node.pCommandQueueDebugNameW),
+                      static_cast<void*>(node.pCommandList),
+                      DredName(node.pCommandListDebugNameA, node.pCommandListDebugNameW), completed, node.BreadcrumbCount);
+            if (node.pCommandHistory != nullptr)
+            {
+                const auto start = completed > 3 ? completed - 3 : 0;
+                const auto end = completed + std::min(node.BreadcrumbCount - completed, 4u);
+                for (UINT op = start; op < end; ++op)
+                {
+                    D3D12_AUTO_BREADCRUMB_OP operation {};
+                    if (!ReadDred(node.pCommandHistory + op, operation))
+                        break;
+                    LOG_ERROR("DRED command list={:p} index={} op={}", static_cast<void*>(node.pCommandList), op,
+                              static_cast<UINT>(operation));
+                }
+            }
+        }
+    }
+
+    D3D12_DRED_PAGE_FAULT_OUTPUT1 fault {};
+    const auto faultResult = dred->GetPageFaultAllocationOutput1(&fault);
+    LOG_ERROR("DRED pageFault result=0x{:X} va=0x{:X}", static_cast<UINT>(faultResult), fault.PageFaultVA);
+    if (SUCCEEDED(faultResult))
+    {
+        LogDredAllocations("live", fault.pHeadExistingAllocationNode);
+        LogDredAllocations("recently freed", fault.pHeadRecentFreedAllocationNode);
+    }
+    dred->Release();
+}
+
 void Util::GetDeviceRemovedReason(ID3D12Device* pDevice)
 {
     auto reason = pDevice->GetDeviceRemovedReason();
+    ReportD3D12Fault(pDevice, reason);
 
     switch (reason)
     {

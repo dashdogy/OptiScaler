@@ -1,7 +1,9 @@
 #include "pch.h"
 #include "XeFG_Inputs_Dx12.h"
+#include <misc/IdentifyGpu.h>
 #include <proxies/XeLL_Proxy.h>
 #include <detours/detours.h>
+#include <wrl/client.h>
 
 #include <intrin.h>
 
@@ -10,19 +12,46 @@
 // Without the game's own XeFG the hooked library is OptiScaler's, its XeFG output's calls aren't the game's
 static bool FromOptiScaler(void* returnAddress) { return Util::GetCallerModule(returnAddress) == dllModule; }
 
-void XeFGInputs::PassApply(xefg_swapchain_handle_t context)
+static bool NeedsAmdXeFGRtssGuard(ID3D12CommandQueue* queue)
 {
+    if (!State::Instance().gameQuirks[GameQuirk::SuspendAmdXeFGWithRtss] || queue == nullptr)
+        return false;
+
+    Microsoft::WRL::ComPtr<ID3D12Device> device;
+    if (FAILED(queue->GetDevice(IID_PPV_ARGS(device.GetAddressOf()))) || !device)
+        return false;
+
+    const auto luid = device->GetAdapterLuid();
+    return std::ranges::any_of(IdentifyGpu::getAllGpus(), [&](const auto& gpu) {
+        return IsEqualLUID(gpu.luid, luid) && gpu.vendorId == VendorId::AMD && !gpu.softwareAdapter &&
+               !gpu.d3d12IsVkd3dProton;
+    });
+}
+
+xefg_swapchain_result_t XeFGInputs::PassApply(xefg_swapchain_handle_t context)
+{
+    if (context == _passRtssGuardContext && !_passRtssBlocked && GetModuleHandleW(L"RTSSHooks64.dll") != nullptr)
+    {
+        // Once RTSS has hooked this context, leave FG off until the context is recreated.
+        _passRtssBlocked = true;
+        LOG_WARN("Crimson Desert: suspending AMD XeFG passthrough while RTSS is loaded");
+    }
+
+    const bool suspended = context == _passRtssGuardContext && _passRtssBlocked;
     auto& setting = Config::Instance()->FGXeFGOverrideInterpolationCount;
-    const uint32_t enabled = setting.has_value() && setting.value() == 0 ? 0 : _passGameEnabled;
+    const uint32_t enabled = suspended || (setting.has_value() && setting.value() == 0) ? 0 : _passGameEnabled;
     const uint32_t count = std::min(setting.value_or(0) > 0 ? (uint32_t) setting.value() : _passGameCount, _passMax);
 
     // Each change is applied once, a failed call is logged instead of repeated every frame
     if (enabled != _passEnabled)
     {
         _passEnabled = enabled;
-        auto result = XeFGProxy::SetEnabled()(context, enabled);
-        LOG_INFO("XeFG passthrough: enabled {} (game {}), result: {}", enabled, _passGameEnabled, (int) result);
+        _passEnableResult = XeFGProxy::SetEnabled()(context, enabled);
+        LOG_INFO("XeFG passthrough: enabled {} (game {}), result: {}", enabled, _passGameEnabled, (int) _passEnableResult);
     }
+
+    if (suspended)
+        return _passEnableResult;
 
     if (count >= 1 && count != _passCount && XeFGProxy::SetNumInterpolatedFrames() != nullptr)
     {
@@ -31,6 +60,8 @@ void XeFGInputs::PassApply(xefg_swapchain_handle_t context)
         LOG_INFO("XeFG passthrough: interpolated frames {} (game {}, max {}), result: {}", count, _passGameCount,
                  _passMax, (int) result);
     }
+
+    return XEFG_SWAPCHAIN_RESULT_SUCCESS;
 }
 
 void XeFGInputs::PassInit(const xefg_swapchain_d3d12_init_params_t* params)
@@ -39,6 +70,8 @@ void XeFGInputs::PassInit(const xefg_swapchain_d3d12_init_params_t* params)
     _passContext = nullptr;
     _passGameCount = params ? params->maxInterpolatedFrames : 1;
     _passGameEnabled = 0;
+    _passRtssGuardContext = nullptr;
+    _passRtssBlocked = false;
     LOG_INFO("XeFG passthrough: game context init, interpolated frames: {}", _passGameCount);
 }
 
@@ -46,7 +79,10 @@ xefg_swapchain_result_t XeFGInputs::PassInitFromSwapChain(xefg_swapchain_handle_
                                                           const xefg_swapchain_d3d12_init_params_t* params)
 {
     PassInit(params);
-    return XeFGProxy::D3D12InitFromSwapChain()(context, queue, params);
+    const auto result = XeFGProxy::D3D12InitFromSwapChain()(context, queue, params);
+    if (result == XEFG_SWAPCHAIN_RESULT_SUCCESS && NeedsAmdXeFGRtssGuard(queue))
+        _passRtssGuardContext = context;
+    return result;
 }
 
 xefg_swapchain_result_t XeFGInputs::PassInitFromSwapChainDesc(xefg_swapchain_handle_t context, HWND hwnd,
@@ -56,7 +92,10 @@ xefg_swapchain_result_t XeFGInputs::PassInitFromSwapChainDesc(xefg_swapchain_han
                                                               const xefg_swapchain_d3d12_init_params_t* params)
 {
     PassInit(params);
-    return XeFGProxy::D3D12InitFromSwapChainDesc()(context, hwnd, desc, fullscreenDesc, queue, factory, params);
+    const auto result = XeFGProxy::D3D12InitFromSwapChainDesc()(context, hwnd, desc, fullscreenDesc, queue, factory, params);
+    if (result == XEFG_SWAPCHAIN_RESULT_SUCCESS && NeedsAmdXeFGRtssGuard(queue))
+        _passRtssGuardContext = context;
+    return result;
 }
 
 xefg_swapchain_result_t XeFGInputs::PassSetEnabled(xefg_swapchain_handle_t context, uint32_t enable)
@@ -64,7 +103,7 @@ xefg_swapchain_result_t XeFGInputs::PassSetEnabled(xefg_swapchain_handle_t conte
     _passGameEnabled = enable;
 
     if (context == _passContext)
-        PassApply(context);
+        return PassApply(context);
 
     return XEFG_SWAPCHAIN_RESULT_SUCCESS;
 }
@@ -74,7 +113,7 @@ xefg_swapchain_result_t XeFGInputs::PassSetNumInterpolatedFrames(xefg_swapchain_
     _passGameCount = count;
 
     if (context == _passContext)
-        PassApply(context);
+        return PassApply(context);
 
     return XEFG_SWAPCHAIN_RESULT_SUCCESS;
 }
@@ -94,7 +133,8 @@ xefg_swapchain_result_t XeFGInputs::PassSetPresentId(xefg_swapchain_handle_t con
         LOG_INFO("XeFG passthrough: new context, max interpolated frames: {}", _passMax);
     }
 
-    PassApply(context);
+    if (const auto result = PassApply(context); result != XEFG_SWAPCHAIN_RESULT_SUCCESS)
+        return result;
     return XeFGProxy::SetPresentId()(context, presentId);
 }
 

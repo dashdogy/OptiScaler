@@ -24,6 +24,7 @@
 #include <inputs/FG/XeFG_Inputs_Dx12.h>
 
 #include <magic_enum.hpp>
+#include <wrl/client.h>
 
 #include <low_latency/input/input_antilag2.h>
 
@@ -222,6 +223,14 @@ static void WaitForGPUIdle(IUnknown* object)
         return;
     }
 
+    if (FAILED(device->GetDeviceRemovedReason()))
+    {
+        Util::GetDeviceRemovedReason(device);
+        device->Release();
+        queue->Release();
+        return;
+    }
+
     if (resizeFence == nullptr || resizeFenceDevice != device)
     {
         if (resizeFence != nullptr)
@@ -346,13 +355,13 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                             const DXGI_PRESENT_PARAMETERS* pPresentParameters, IUnknown* pDevice, HWND hWnd, bool isUWP,
                             bool isCurrent)
 {
+    const auto nativePresent = [&] {
+        return pPresentParameters == nullptr
+                   ? pSwapChain->Present(SyncInterval, Flags)
+                   : static_cast<IDXGISwapChain1*>(pSwapChain)->Present1(SyncInterval, Flags, pPresentParameters);
+    };
     if (State::Instance().isShuttingDown)
-    {
-        if (pPresentParameters == nullptr)
-            return pSwapChain->Present(SyncInterval, Flags);
-        else
-            return ((IDXGISwapChain1*) pSwapChain)->Present1(SyncInterval, Flags, pPresentParameters);
-    }
+        return nativePresent();
 
     // This lock will delay/prevent release of buffers while present is ongoing
     std::shared_lock<std::shared_mutex> dx11wDx12PresentLock(Dx11wDx12Sync::PresentResizeMutex(), std::defer_lock);
@@ -363,8 +372,6 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     }
 
     LOG_DEBUG("{}", State::Instance().frameCount);
-
-    HRESULT presentResult;
 
     auto willPresent = (Flags & DXGI_PRESENT_TEST) == 0;
 
@@ -396,7 +403,7 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     }
 
     ID3D11Device* device = nullptr;
-    ID3D12Device* device12 = nullptr;
+    Microsoft::WRL::ComPtr<ID3D12Device> device12;
     ID3D12CommandQueue* cq = nullptr;
 
     bool isD3D11 = false;
@@ -437,9 +444,15 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 State::Instance().currentCommandQueue = cq;
         }
 
-        if (cq->GetDevice(IID_PPV_ARGS(&device12)) == S_OK)
+        if (cq->GetDevice(IID_PPV_ARGS(device12.GetAddressOf())) == S_OK && device12)
         {
-            device12->Release();
+            if (isCurrent && State::Instance().gameQuirks[GameQuirk::SkipPresentWorkOnRemovedDevice] &&
+                FAILED(device12->GetDeviceRemovedReason()))
+            {
+                LOG_WARN("DXGI: skipping OptiScaler present work on a removed D3D12 device");
+                Util::GetDeviceRemovedReason(device12.Get());
+                return nativePresent();
+            }
 
             if (!_dx12Device)
                 LOG_DEBUG("D3D12Device captured");
@@ -447,9 +460,9 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             _dx12Device = true;
 
             if (isCurrent)
-                State::Instance().currentD3D12Device = device12;
+                State::Instance().currentD3D12Device = device12.Get();
 
-            D3D12Hooks::HookDevice(device12);
+            D3D12Hooks::HookDevice(device12.Get());
         }
     }
 
@@ -596,10 +609,7 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     LOG_DEBUG("Calling original present");
 
     // swapchain present
-    if (pPresentParameters == nullptr)
-        presentResult = pSwapChain->Present(SyncInterval, Flags);
-    else
-        presentResult = ((IDXGISwapChain1*) pSwapChain)->Present1(SyncInterval, Flags, pPresentParameters);
+    const auto presentResult = nativePresent();
 
     DeferredRelease::Process();
 
@@ -625,9 +635,9 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 if (State::Instance().currentD3D11Device != nullptr)
                     Util::GetDeviceRemovedReason(State::Instance().currentD3D11Device);
             }
-            else if (State::Instance().currentD3D12Device != nullptr)
+            else if (device12)
             {
-                Util::GetDeviceRemovedReason(State::Instance().currentD3D12Device);
+                Util::GetDeviceRemovedReason(device12.Get());
             }
         }
     }
@@ -990,7 +1000,8 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::Present(UINT SyncInterval, UIN
 
         // When Reflex can't be used to limit, sleep in present
         // DXVK's DXGI presents through Vulkan where the limiter already sleeps
-        if (isCurrent && !State::Instance().reflexLimitsFps && State::Instance().activeFgOutput == FGOutput::NoFG &&
+        if (SUCCEEDED(result) && isCurrent && !State::Instance().reflexLimitsFps &&
+            State::Instance().activeFgOutput == FGOutput::NoFG &&
             !IdentifyGpu::getPrimaryGpu().dxgiIsDxvk && !InputCommon::can_limit_fps())
             FrameLimit::sleep(false);
     }
@@ -1305,7 +1316,8 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::Present1(UINT SyncInterval, UI
 
         // When Reflex can't be used to limit, sleep in present
         // DXVK's DXGI presents through Vulkan where the limiter already sleeps
-        if (isCurrent && !State::Instance().reflexLimitsFps && State::Instance().activeFgOutput == FGOutput::NoFG &&
+        if (SUCCEEDED(result) && isCurrent && !State::Instance().reflexLimitsFps &&
+            State::Instance().activeFgOutput == FGOutput::NoFG &&
             !IdentifyGpu::getPrimaryGpu().dxgiIsDxvk && !InputCommon::can_limit_fps())
             FrameLimit::sleep(false);
     }

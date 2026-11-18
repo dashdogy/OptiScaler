@@ -495,9 +495,15 @@ const std::vector<GameConfig> gameConfigs = {
         .defaults = { DxgiSpoofing = false, WithUpscalerFGInput(FGDisableHUDFix = true) },
         .quirks = { FSRFGHudlessMismatchFixup },
     },
-    // Marvel’s Spider-Man: Miles Morales, Marvel's Spider-Man 2
+    // Marvel’s Spider-Man: Miles Morales
     {
-        .exes = { "milesmorales.exe", "spider-man2.exe" },
+        .exes = { "milesmorales.exe" },
+        .defaults = { DxgiSpoofing = false, WithUpscalerFGInput(FGDisableHUDFix = true) },
+        .quirks = { SkipPresentWorkOnRemovedDevice },
+    },
+    // Marvel's Spider-Man 2
+    {
+        .exes = { "spider-man2.exe" },
         .defaults = { DxgiSpoofing = false, WithUpscalerFGInput(FGDisableHUDFix = true) },
     },
     // DEATH STRANDING 2: ON THE BEACH
@@ -580,6 +586,7 @@ const std::vector<GameConfig> gameConfigs = {
     {
         .exes = { "crimsondesert.exe" },
         .defaults = { DxgiSpoofing = false },
+        .quirks = { SuspendAmdXeFGWithRtss },
     },
 
     // Assassin's Creed Mirage

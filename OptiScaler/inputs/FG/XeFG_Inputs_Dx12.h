@@ -26,6 +26,9 @@ class XeFGInputs
     inline static uint32_t _passGameEnabled = 0;
     inline static uint32_t _passCount = 0;
     inline static uint32_t _passEnabled = UINT32_MAX;
+    inline static xefg_swapchain_result_t _passEnableResult = XEFG_SWAPCHAIN_RESULT_SUCCESS;
+    inline static xefg_swapchain_handle_t _passRtssGuardContext = nullptr;
+    inline static bool _passRtssBlocked = false;
 
     // Other FG outputs: the game is only offered 1 interpolated frame, the FG output decides the real count
     inline static ID3D12Device* _device = nullptr;
@@ -58,7 +61,7 @@ class XeFGInputs
     inline static bool _redirectIncomplete = false;
 
     // XeFG output
-    static void PassApply(xefg_swapchain_handle_t context);
+    static xefg_swapchain_result_t PassApply(xefg_swapchain_handle_t context);
     static void PassInit(const xefg_swapchain_d3d12_init_params_t* params);
     static xefg_swapchain_result_t PassInitFromSwapChain(xefg_swapchain_handle_t context, ID3D12CommandQueue* queue,
                                                          const xefg_swapchain_d3d12_init_params_t* params);

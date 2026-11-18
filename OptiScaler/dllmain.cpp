@@ -1454,6 +1454,12 @@ static void printQuirks(flag_set<GameQuirk>& quirks)
     if (quirks & GameQuirk::VulkanDlssgSingleQueueFamily)
         stringQuirks.push_back("Reserve Vulkan DLSSG queues from the game's graphics family");
 
+    if (quirks & GameQuirk::SkipPresentWorkOnRemovedDevice)
+        stringQuirks.push_back("Skip OptiScaler present work when the D3D12 device is removed");
+
+    if (quirks & GameQuirk::SuspendAmdXeFGWithRtss)
+        stringQuirks.push_back("Suspend AMD XeFG passthrough if RTSS is loaded");
+
     state->detectedQuirks.append_range(stringQuirks);
     for (auto& stringQuirk : stringQuirks)
         spdlog::info("Quirk: {}", stringQuirk);

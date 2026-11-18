@@ -440,6 +440,8 @@ static void RenderImGui_DX12(IDXGISwapChain* pSwapChainPlain)
             if (result != S_OK)
             {
                 LOG_ERROR("CreateDescriptorHeap(g_pd3dRtvDescHeap): {0:X}", (unsigned long) result);
+                if (result == DXGI_ERROR_DEVICE_REMOVED)
+                    Util::GetDeviceRemovedReason(device);
                 MenuOverlayBase::HideMenu();
                 CleanupRenderTargetDx12(true);
                 pSwapChain->Release();

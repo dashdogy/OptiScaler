@@ -37,6 +37,8 @@ enum class GameQuirk : uint64_t
                          // for every upscaleSize change (Split Fiction)
     ReleaseDlssMemoryWithFeature,
     VulkanDlssgSingleQueueFamily,
+    SkipPresentWorkOnRemovedDevice,
+    SuspendAmdXeFGWithRtss,
     // Don't forget to add the new entry to printQuirks
     _
 };

@@ -63,6 +63,7 @@ void WarnIfProxy(std::string functionName, IUnknown* pObject);
 IUnknown* GetReShadeOriginal(IUnknown* pObject);
 void GetDeviceRemovedReason(ID3D11Device* pDevice);
 void GetDeviceRemovedReason(ID3D12Device* pDevice);
+void EnableD3D12FaultDiagnostics();
 void LoadProxyLibrary(const std::wstring& name, const std::wstring& optiPath, const std::wstring& overridePath,
                       HMODULE* memoryModule, HMODULE* loadedModule);
 

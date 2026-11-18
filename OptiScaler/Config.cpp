@@ -455,6 +455,7 @@ bool Config::Reload(std::filesystem::path iniPath)
         // Logging
         {
             LogToFile.set_from_config(readBool("Log", "LogToFile"));
+            LogD3D12Dred.set_from_config(readBool("Log", "D3D12DRED"));
             LogLevel.set_from_config(readInt("Log", "LogLevel"));
             LogToConsole.set_from_config(readBool("Log", "LogToConsole"));
             LogToDebug.set_from_config(readBool("Log", "LogToDebug"));
@@ -1981,6 +1982,7 @@ bool Config::SaveIni()
     // Logging
     {
         ini.SetValue("Log", "LogToFile", GetBoolValue(Instance()->LogToFile.value_for_config()).c_str());
+        ini.SetValue("Log", "D3D12DRED", GetBoolValue(Instance()->LogD3D12Dred.value_for_config()).c_str());
         ini.SetValue("Log", "LogLevel", GetIntValue(Instance()->LogLevel.value_for_config()).c_str());
         ini.SetValue("Log", "LogToConsole", GetBoolValue(Instance()->LogToConsole.value_for_config()).c_str());
         ini.SetValue("Log", "LogToDebug", GetBoolValue(Instance()->LogToDebug.value_for_config()).c_str());
