@@ -838,6 +838,27 @@ HRESULT FGHooks::hkGetFullscreenState(IDXGISwapChain* This, BOOL* pFullscreen, I
     return result;
 }
 
+static void ResolveDlssgResizeSize(IDXGISwapChain* swapchain, UINT& width, UINT& height)
+{
+    const auto& state = State::Instance();
+    if ((width != 0 && height != 0) || state.activeFgOutput != FGOutput::DLSSG ||
+        state.currentFGSwapchain != swapchain)
+        return;
+
+    // DXGI resolves zero dimensions from the HWND, but Streamline also uses
+    // the resize arguments when it builds its proxy backbuffers.
+    DXGI_SWAP_CHAIN_DESC desc {};
+    RECT client {};
+    if (swapchain->GetDesc(&desc) != S_OK || !desc.Windowed || desc.OutputWindow == nullptr ||
+        !GetClientRect(desc.OutputWindow, &client) || client.right <= client.left || client.bottom <= client.top)
+        return;
+
+    if (width == 0)
+        width = static_cast<UINT>(client.right - client.left);
+    if (height == 0)
+        height = static_cast<UINT>(client.bottom - client.top);
+}
+
 HRESULT FGHooks::hkResizeBuffers(IDXGISwapChain* This, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat,
                                  UINT SwapChainFlags)
 {
@@ -893,6 +914,8 @@ HRESULT FGHooks::hkResizeBuffers(IDXGISwapChain* This, UINT BufferCount, UINT Wi
         LOG_DEBUG("Keeping DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING for DLSSG");
         SwapChainFlags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
     }
+
+    ResolveDlssgResizeSize(This, Width, Height);
 
     LOG_DEBUG("BufferCount: {}, Width: {}, Height: {}, NewFormat:{}, SwapChainFlags: {:X}", BufferCount, Width, Height,
               (UINT) NewFormat, SwapChainFlags);
@@ -1117,6 +1140,8 @@ HRESULT FGHooks::hkResizeBuffers1(IDXGISwapChain3* This, UINT BufferCount, UINT 
         LOG_DEBUG("Keeping DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING for DLSSG");
         SwapChainFlags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
     }
+
+    ResolveDlssgResizeSize(This, Width, Height);
 
     LOG_DEBUG("BufferCount: {}, Width: {}, Height: {}, NewFormat:{}, SwapChainFlags: {:X}, Caller: {}", BufferCount,
               Width, Height, (UINT) Format, SwapChainFlags, Util::WhoIsTheCaller(_ReturnAddress()));
@@ -1682,10 +1707,21 @@ ULONG FGHooks::hkFGRelease(IUnknown* This)
 
     This->AddRef();
 
-    if (!Config::Instance()->FGPreserveSwapChain.value_or_default())
+    const auto output = State::Instance().activeFgOutput;
+    const bool dlssgOutput = output == FGOutput::DLSSG;
+    if (dlssgOutput || !Config::Instance()->FGPreserveSwapChain.value_or_default())
     {
         if (o_FGRelease(This) == 1)
         {
+            if (dlssgOutput)
+            {
+                // This is Streamline's last swapchain reference. Release its
+                // proxy through COM so it can retire its own backbuffers and
+                // allow a replacement swapchain.
+                ReleaseFGSwapchain(This, false);
+                return o_FGRelease(This);
+            }
+
             ReleaseFGSwapchain(This, true);
             return 0;
         }
@@ -1695,8 +1731,7 @@ ULONG FGHooks::hkFGRelease(IUnknown* This)
         auto refCount = o_FGRelease(This);
 
         // Only FSR FG and XeFG release the kept swapchain with their swapchain context
-        const bool canRelease =
-            State::Instance().activeFgOutput == FGOutput::FSRFG || State::Instance().activeFgOutput == FGOutput::XeFG;
+        const bool canRelease = output == FGOutput::FSRFG || output == FGOutput::XeFG;
 
         if (refCount == 1)
         {
@@ -1770,7 +1805,7 @@ void FGHooks::ReleaseFGSwapchain(IUnknown* swapchain, bool releaseReferences)
     }
 
     // A kept swapchain stays tracked when the FG library couldn't release it
-    if (!releaseReferences && State::Instance().currentFG != nullptr &&
+    if (!releaseReferences && _releasedFGSwapchain == swapchain && State::Instance().currentFG != nullptr &&
         State::Instance().currentFG->SwapchainContext() != nullptr)
     {
         LOG_WARN("Kept FG swapchain couldn't be released");

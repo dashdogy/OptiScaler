@@ -544,9 +544,12 @@ const std::vector<GameConfig> gameConfigs = {
     },
 
     // METRO 2033 Redux, METRO Last Light Redux
+    // The games create several D3D11 devices at startup. Let them choose the
+    // feature levels. The D3D12 interop path already accepts level 11_0.
     {
         .exes = { "metro.exe" },
         .defaults = { DxgiSpoofing = false },
+        .quirks = { SkipD3D11FeatureLevelElevation },
     },
 
     // Kingdom Come: Deliverance II

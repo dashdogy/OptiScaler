@@ -969,10 +969,16 @@ static VkResult hkvkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPres
     memcpy(&localPresentInfo, pPresentInfo, sizeof(VkPresentInfoKHR));
 
     // render menu if needed
-    if (!dxgiBacked && !MenuOverlayVk::QueuePresent(queue, &localPresentInfo))
+    if (!dxgiBacked)
     {
-        LOG_ERROR("QueuePresent: false!");
-        return VK_ERROR_OUT_OF_DATE_KHR;
+        const auto menuResult = MenuOverlayVk::QueuePresent(queue, &localPresentInfo);
+        if (menuResult != VK_SUCCESS)
+        {
+            if (pPresentInfo->pResults != nullptr)
+                std::fill_n(pPresentInfo->pResults, pPresentInfo->swapchainCount, menuResult);
+            LOG_ERROR("Menu overlay did not submit: {}", (int32_t) menuResult);
+            return menuResult;
+        }
     }
 
     ReflexHooks::update(false, true);
@@ -1033,7 +1039,8 @@ static VkResult hkvkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPres
 
     // The limit counts presented frames, the FG output presents its generated frames from the game's present
     // The DX12 FG swapchain's present limits interop presents
-    if (!interopPresent && !State::Instance().reflexLimitsFps && !InputCommon::can_limit_fps())
+    if (result >= VK_SUCCESS && !interopPresent && !State::Instance().reflexLimitsFps &&
+        !InputCommon::can_limit_fps())
         FrameLimit::sleep(fgPresent && fg->IsActive() && !fg->IsPaused());
 
     if (fgPresent)

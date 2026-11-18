@@ -387,7 +387,7 @@ VkResult DLSSG_Vk::QueuePresent(VkQueue queue, const VkPresentInfoKHR* pPresentI
 
     auto result = _sl.queuePresent(queue, pPresentInfo);
 
-    if (marked)
+    if (marked && result >= VK_SUCCESS)
     {
         StreamlineProxy::PCLSetMarker()(sl::PCLMarker::ePresentEnd, *token);
         StreamlineProxy::ReflexSleep()(*token);

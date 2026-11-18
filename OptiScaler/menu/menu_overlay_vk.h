@@ -9,7 +9,7 @@ void CreateSwapchain(VkDevice device, VkPhysicalDevice pd, VkInstance instance, 
                      const VkSwapchainCreateInfoKHR* pCreateInfo, const VkAllocationCallbacks* pAllocator,
                      VkSwapchainKHR* pSwapchain);
 void DeviceCreated(VkDevice device, const VkDeviceCreateInfo* pCreateInfo);
-bool QueuePresent(VkQueue queue, VkPresentInfoKHR* pPresentInfo);
+VkResult QueuePresent(VkQueue queue, VkPresentInfoKHR* pPresentInfo);
 // With a swapchain, only when the menu is still on it
 void DestroyVulkanObjects(bool shutdown, VkDevice device = VK_NULL_HANDLE, VkSwapchainKHR swapchain = VK_NULL_HANDLE);
 

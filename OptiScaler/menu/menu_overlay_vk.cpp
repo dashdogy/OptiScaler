@@ -578,23 +578,23 @@ void MenuOverlayVk::DeviceCreated(VkDevice device, const VkDeviceCreateInfo* pCr
     }
 }
 
-bool MenuOverlayVk::QueuePresent(VkQueue queue, VkPresentInfoKHR* pPresentInfo)
+VkResult MenuOverlayVk::QueuePresent(VkQueue queue, VkPresentInfoKHR* pPresentInfo)
 {
     LOG_FUNC();
 
     if (!_vulkanObjectsCreated)
-        return true;
+        return VK_SUCCESS;
 
     if (!MenuOverlayBase::IsInited())
-        return true;
+        return VK_SUCCESS;
 
     if (pPresentInfo->swapchainCount == 0)
-        return false;
+        return VK_ERROR_OUT_OF_DATE_KHR;
 
     // Cleanup on another thread can be waiting on this present's queue, skip the menu instead of blocking
     std::unique_lock cleanLock(_vkCleanMutex, std::try_to_lock);
     if (!cleanLock.owns_lock() || !_vulkanObjectsCreated || pPresentInfo->pSwapchains[0] != _menuSwapchain)
-        return true;
+        return VK_SUCCESS;
 
     LOG_DEBUG("rendering menu, swapchain count: {0}", pPresentInfo->swapchainCount);
 
@@ -644,13 +644,13 @@ bool MenuOverlayVk::QueuePresent(VkQueue queue, VkPresentInfoKHR* pPresentInfo)
             const bool blurMenu = blurReady && MenuCommon::BackgroundBlurUsed();
 
             if (fd->Fence == VK_NULL_HANDLE)
-                return true;
+                return VK_SUCCESS;
 
             if (auto wResult = vkWaitForFences(_ImVulkan_Info.Device, 1, &fd->Fence, VK_TRUE, UINT64_MAX);
                 wResult != VK_SUCCESS)
             {
                 LOG_ERROR("vkWaitForFences error: {}", (int32_t) wResult);
-                return true;
+                return wResult == VK_ERROR_DEVICE_LOST ? wResult : VK_SUCCESS;
             }
 
             {
@@ -682,8 +682,8 @@ bool MenuOverlayVk::QueuePresent(VkQueue queue, VkPresentInfoKHR* pPresentInfo)
             auto ecbResult = vkEndCommandBuffer(fd->CommandBuffer);
             if (ecbResult != VK_SUCCESS)
             {
-                LOG_ERROR("vkQueueSubmit error: {0:X}", (UINT) ecbResult);
-                return false;
+                LOG_ERROR("vkEndCommandBuffer error: {0:X}", (UINT) ecbResult);
+                return ecbResult == VK_ERROR_DEVICE_LOST ? ecbResult : VK_ERROR_OUT_OF_DATE_KHR;
             }
 
             // Submit queue and semaphores
@@ -704,11 +704,19 @@ bool MenuOverlayVk::QueuePresent(VkQueue queue, VkPresentInfoKHR* pPresentInfo)
             submit_info.pSignalSemaphores = &_ImVulkan_Semaphores[semaphoreIndex];
 
             // Reset only when a submit follows, destroy waits on it
-            vkResetFences(_ImVulkan_Info.Device, 1, &fd->Fence);
+            const auto resetResult = vkResetFences(_ImVulkan_Info.Device, 1, &fd->Fence);
+            if (resetResult != VK_SUCCESS)
+            {
+                LOG_ERROR("vkResetFences error: {0:X}", (UINT) resetResult);
+                return resetResult == VK_ERROR_DEVICE_LOST ? resetResult : VK_ERROR_OUT_OF_DATE_KHR;
+            }
             auto qResult = vkQueueSubmit(menuQueue, 1, &submit_info, fd->Fence);
             if (qResult != VK_SUCCESS)
             {
                 LOG_ERROR("vkQueueSubmit error: {0:X}", (UINT) qResult);
+
+                if (qResult == VK_ERROR_DEVICE_LOST)
+                    return qResult;
 
                 // Failed submit leaves the fence unsignaled, waits on it would never return
                 VkFenceCreateInfo fenceInfo {};
@@ -719,7 +727,7 @@ bool MenuOverlayVk::QueuePresent(VkQueue queue, VkPresentInfoKHR* pPresentInfo)
                 if (vkCreateFence(_ImVulkan_Info.Device, &fenceInfo, VK_NULL_HANDLE, &fd->Fence) != VK_SUCCESS)
                     fd->Fence = VK_NULL_HANDLE;
 
-                return false;
+                return VK_ERROR_OUT_OF_DATE_KHR;
             }
 
             pPresentInfo->waitSemaphoreCount = 1;
@@ -727,7 +735,7 @@ bool MenuOverlayVk::QueuePresent(VkQueue queue, VkPresentInfoKHR* pPresentInfo)
         }
     }
 
-    return true;
+    return VK_SUCCESS;
 }
 
 void MenuOverlayVk::CreateSwapchain(VkDevice device, VkPhysicalDevice pd, VkInstance instance, HWND hwnd,
