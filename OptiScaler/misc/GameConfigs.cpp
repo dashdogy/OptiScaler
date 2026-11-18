@@ -532,6 +532,7 @@ const std::vector<GameConfig> gameConfigs = {
         .exes = { "dead space.exe" },
         .defaults = { DxgiSpoofing = false, WithXeFG(OverrideVsync = true), WithXeFG(FGXeFGForceBorderless = true),
                       FGSkipResizeBuffers = false },
+        .quirks = { ReleaseDlssMemoryWithFeature },
     },
 
     // Metro Exodus Enhanced Edition
@@ -877,7 +878,7 @@ const std::vector<GameConfig> gameConfigs = {
     {
         .exes = { "wwzretail.exe" },
         .defaults = { UseFsr2VulkanInputs = true, OnNonNvidia(VulkanExtensionSpoofing = true), DxgiSpoofing = false },
-        .quirks = { ForceDepthD32S8 },
+        .quirks = { ForceDepthD32S8, VulkanDlssgSingleQueueFamily },
     },
 
     // Baldur's Gate 3

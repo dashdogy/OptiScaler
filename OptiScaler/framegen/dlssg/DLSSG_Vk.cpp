@@ -36,6 +36,11 @@ DLSSG_Vk::DLSSG_Vk() : IFGFeature_Vk(), DLSSG_Common(), IFGFeature()
 
     LOG_INFO("Streamline wants {} graphics and {} compute queues", _graphicsQueueCount, _computeQueueCount);
 
+    // World War Z writes OptiFG's exclusive input copies on the game's graphics
+    // family. Keep Streamline's queues there too, on separate queue indices.
+    _extraQueuesUseGameFamily =
+        static_cast<bool>(State::Instance().gameQuirks & GameQuirk::VulkanDlssgSingleQueueFamily);
+
     _extraQueues.resize(_graphicsQueueCount + _computeQueueCount);
 
     for (uint32_t i = 0; i < _extraQueues.size(); i++)
@@ -225,6 +230,13 @@ bool DLSSG_Vk::SetupStreamline(VkDevice device)
 
     if (!hasQueues(0, _graphicsQueueCount) || !hasQueues(_graphicsQueueCount, _computeQueueCount))
     {
+        if (_extraQueuesUseGameFamily)
+        {
+            LOG_ERROR("DLSSG needs {} graphics and {} compute queues in the game's Vulkan graphics family {}",
+                      _graphicsQueueCount, _computeQueueCount, _gameQueueFamily);
+            return false;
+        }
+
         LOG_ERROR(
             "DLSSG needs {} graphics and {} compute queues next to the game's, the GPU driver doesn't have enough "
             "free ones (RADV for example), DLSSG is disabled",

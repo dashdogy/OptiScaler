@@ -72,6 +72,17 @@ bool DLSSFeatureDx12::InitDLSS(ID3D12GraphicsCommandList* InCommandList, NVSDK_N
     {
         ProcessInitParams(InParameters);
 
+        // Dead Space's legacy Streamline frees its resource callbacks with the
+        // plugin. Ask NGX to release its cache while the callbacks still work.
+        void* releaseCallback = nullptr;
+        if ((State::Instance().gameQuirks & GameQuirk::ReleaseDlssMemoryWithFeature) &&
+            InParameters->Get(NVSDK_NGX_Parameter_ResourceReleaseCallback, &releaseCallback) == NVSDK_NGX_Result_Success &&
+            releaseCallback != nullptr)
+        {
+            InParameters->Set(NVSDK_NGX_Parameter_FreeMemOnReleaseFeature, 1);
+            LOG_INFO("DLSS will release cached resources with the feature");
+        }
+
         _p_dlssHandle = &_dlssHandle;
 
         NVSDK_NGX_Result nvResult;

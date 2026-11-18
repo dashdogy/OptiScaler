@@ -35,6 +35,8 @@ enum class GameQuirk : uint64_t
     ExtendedSearch,      // Extend the search when normal lookup fails (Phantom Blade Zero)
     PadToMaxUpscaleSize, // FFX inputs: DLSS/XeSS stay at the max upscale size, padded inputs instead of a recreation
                          // for every upscaleSize change (Split Fiction)
+    ReleaseDlssMemoryWithFeature,
+    VulkanDlssgSingleQueueFamily,
     // Don't forget to add the new entry to printQuirks
     _
 };

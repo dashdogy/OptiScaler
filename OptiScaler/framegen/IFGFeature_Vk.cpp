@@ -120,6 +120,9 @@ void IFGFeature_Vk::PrepareDevice(VkPhysicalDevice physicalDevice, VkDeviceCreat
 
         for (uint32_t family = 0; family < familyCount; family++)
         {
+            if (_extraQueuesUseGameFamily && family != _gameQueueFamily)
+                continue;
+
             auto familyCaps = caps(families[family].queueFlags);
 
             if ((familyCaps & queue.flags) != queue.flags || used[family] + needed > families[family].queueCount)

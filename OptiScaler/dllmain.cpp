@@ -1448,6 +1448,12 @@ static void printQuirks(flag_set<GameQuirk>& quirks)
     if (quirks & GameQuirk::PadToMaxUpscaleSize)
         stringQuirks.push_back("Keep DLSS/XeSS at the max FFX upscale size");
 
+    if (quirks & GameQuirk::ReleaseDlssMemoryWithFeature)
+        stringQuirks.push_back("Release DLSS memory before Streamline shuts down");
+
+    if (quirks & GameQuirk::VulkanDlssgSingleQueueFamily)
+        stringQuirks.push_back("Reserve Vulkan DLSSG queues from the game's graphics family");
+
     state->detectedQuirks.append_range(stringQuirks);
     for (auto& stringQuirk : stringQuirks)
         spdlog::info("Quirk: {}", stringQuirk);
