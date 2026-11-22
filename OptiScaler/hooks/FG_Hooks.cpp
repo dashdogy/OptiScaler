@@ -22,6 +22,7 @@
 #include <low_latency/input/input_common.h>
 #include <menu/menu_overlay_dx.h>
 #include <imgui/ImGuiNotify.hpp>
+#include <upscalers/IFeature_Dx11.h>
 
 #include <d3d12.h>
 #include <detours/detours.h>
@@ -1425,22 +1426,31 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         {
             std::optional<double> upscalerTimeOpt {};
 
-            if (state.swapchainInteropApi == SwapchainInteropApi::Dx11wDx12 && state.currentD3D11Device != nullptr)
+            if (state.swapchainInteropApi == SwapchainInteropApi::Dx11wDx12 &&
+                state.currentD3D11Device != nullptr)
             {
-                ID3D11DeviceContext* context = nullptr;
-                state.currentD3D11Device->GetImmediateContext(&context);
+                // The shared current feature can be a native D3D12 upscaler on an interop swapchain.
+                // Only a D3D11 feature (including its D3D12-backed wrapper) accepts this context.
+                if (auto dx11Feature = dynamic_cast<IFeature_Dx11*>(currentFeature))
+                {
+                    Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
+                    state.currentD3D11Device->GetImmediateContext(context.GetAddressOf());
 
-                if (upscalerTimeOpt = currentFeature->ReadUpscalerTime(context); upscalerTimeOpt.has_value())
-                    currentFeature->ReadDetailedGpuTimes(context, state.detailedGpuTimes);
-
-                context->Release();
+                    if (context)
+                    {
+                        upscalerTimeOpt = dx11Feature->ReadUpscalerTime(context.Get());
+                        if (upscalerTimeOpt.has_value())
+                            dx11Feature->ReadDetailedGpuTimes(context.Get(), state.detailedGpuTimes);
+                    }
+                }
             }
             else if (state.swapchainInteropApi == SwapchainInteropApi::None && currentCommandQueue != nullptr)
             {
-                if (upscalerTimeOpt = currentFeature->ReadUpscalerTime(currentCommandQueue);
-                    upscalerTimeOpt.has_value())
+                if (currentFeature->Api() == API::DX12 && !currentFeature->IsWithDx12())
                 {
-                    currentFeature->ReadDetailedGpuTimes(currentCommandQueue, state.detailedGpuTimes);
+                    upscalerTimeOpt = currentFeature->ReadUpscalerTime(currentCommandQueue);
+                    if (upscalerTimeOpt.has_value())
+                        currentFeature->ReadDetailedGpuTimes(currentCommandQueue, state.detailedGpuTimes);
                 }
 
                 if (auto fgGpuTime = fg->ReadGpuTime(currentCommandQueue))

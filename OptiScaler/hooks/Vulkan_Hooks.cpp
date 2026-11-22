@@ -976,7 +976,8 @@ static VkResult hkvkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPres
         {
             if (pPresentInfo->pResults != nullptr)
                 std::fill_n(pPresentInfo->pResults, pPresentInfo->swapchainCount, menuResult);
-            LOG_ERROR("Menu overlay did not submit: {}", (int32_t) menuResult);
+            if (menuResult != VK_ERROR_DEVICE_LOST)
+                LOG_ERROR("Menu overlay did not submit: {}", (int32_t) menuResult);
             return menuResult;
         }
     }

@@ -1152,6 +1152,22 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
     const Config& cfg = *Config::Instance();
 
     auto feature = HandleToFeature[handleId];
+    if (feature == NVSDK_NGX_Feature_FrameGeneration && handleId >= NVNGX_PROVIDER_ID_OFFSET &&
+        state.activeFgNvngx != FGNvngxReplacement::None &&
+        state.gameQuirks[GameQuirk::SkipPresentWorkOnRemovedDevice])
+    {
+        Microsoft::WRL::ComPtr<ID3D12Device> device;
+        if (SUCCEEDED(InCmdList->GetDevice(IID_PPV_ARGS(device.GetAddressOf()))) && device)
+        {
+            const HRESULT reason = device->GetDeviceRemovedReason();
+            if (FAILED(reason))
+            {
+                LOG_WARN("Skipping DLSSG replacement evaluation on a removed device: {:X}", (uint32_t) reason);
+                return NVSDK_NGX_Result_FAIL_PlatformError;
+            }
+        }
+    }
+
     static size_t evalWithoutFG = 0;
     bool fgCreated = std::any_of(HandleToFeature.begin(), HandleToFeature.end(),
                                  [](const auto& pair) { return pair.second == NVSDK_NGX_Feature_FrameGeneration; });
